@@ -64,6 +64,23 @@ namespace WorldRender {
         UINT haloDepthW = 0, haloDepthH = 0;
         bool sceneSeen = false;  // Halo drew its level (and we copied its matrix) since the last Present
 
+        // Minecraft's entity renderer output: the player's body in third person (relative to the
+        // feet), and everything else (chests, beds, minecarts, TNT, particles) relative to an origin.
+        struct Mesh {
+            double origin[3]{};
+            std::vector<proto::RenBatch> batches;
+            std::vector<proto::RenVertex> verts;
+            ID3D11Buffer* vb = nullptr;
+            UINT capacity = 0;
+            bool dirty = false;
+        };
+        Mesh avatar, scene;
+        struct EntityTexture {
+            ID3D11Texture2D* tex = nullptr;
+            ID3D11ShaderResourceView* srv = nullptr;
+        };
+        std::unordered_map<std::uint32_t, EntityTexture> entityTextures;  // skins, armour, ... (RenTexture ids)
+
         // Per-frame things (dropped items, arrows, cracks, the outline), rebuilt every frame.
         proto::WorldEntities entities{};
         std::vector<proto::RenVertex> dynTris, dynCracks, dynLines;
@@ -307,6 +324,99 @@ float4 PSMain(VSOut i) : SV_Target {
             return true;
         }
 
+        void onTexture(ID3D11Device* device, const std::uint8_t* p, std::uint32_t bytes) {
+            proto::RenTexture hdr{};
+            std::memcpy(&hdr, p, sizeof(hdr));
+            if (!hdr.id || bytes < sizeof(hdr) + std::uint64_t(hdr.width) * hdr.height * 4)
+                return;
+            auto& t = entityTextures[hdr.id];
+            rel(t.srv);
+            rel(t.tex);
+            D3D11_TEXTURE2D_DESC td{};
+            td.Width = hdr.width;
+            td.Height = hdr.height;
+            td.MipLevels = 1;
+            td.ArraySize = 1;
+            td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            td.SampleDesc.Count = 1;
+            td.Usage = D3D11_USAGE_DEFAULT;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            const D3D11_SUBRESOURCE_DATA init{ p + sizeof(hdr), hdr.width * 4, 0 };
+            if (SUCCEEDED(device->CreateTexture2D(&td, &init, &t.tex)))
+                device->CreateShaderResourceView(t.tex, nullptr, &t.srv);
+        }
+
+        // [origin (3 doubles), scene only] batchCount, vertexCount, RenBatch[], RenVertex[].
+        void onMesh(Mesh& m, const std::uint8_t* p, std::uint32_t bytes, bool withOrigin) {
+            std::size_t at = 0;
+            if (withOrigin) {
+                if (bytes < 24)
+                    return;
+                std::memcpy(m.origin, p, 24);
+                at = 24;
+            }
+            std::uint32_t counts[2]{};
+            if (bytes < at + 8)
+                return;
+            std::memcpy(counts, p + at, 8);
+            at += 8;
+            const std::uint64_t need = at + std::uint64_t(counts[0]) * sizeof(proto::RenBatch) + std::uint64_t(counts[1]) * sizeof(proto::RenVertex);
+            if (bytes < need)
+                return;
+            m.batches.resize(counts[0]);
+            std::memcpy(m.batches.data(), p + at, counts[0] * sizeof(proto::RenBatch));
+            at += counts[0] * sizeof(proto::RenBatch);
+            m.verts.resize(counts[1]);
+            std::memcpy(m.verts.data(), p + at, counts[1] * sizeof(proto::RenVertex));
+            // Our pixel shader picks the pass per vertex: mark translucent batches' vertices.
+            for (const auto& b : m.batches)
+                if (b.flags & 1)
+                    for (std::uint32_t i = b.first; i < b.first + b.count && i < counts[1]; ++i)
+                        m.verts[i].flags |= 2;
+            m.dirty = true;
+        }
+
+        bool uploadMesh(ID3D11Device* device, ID3D11DeviceContext* context, Mesh& m) {
+            if (m.verts.empty())
+                return false;
+            if (!m.dirty)
+                return m.vb != nullptr;
+            m.dirty = false;
+            const UINT bytes = UINT(m.verts.size() * sizeof(proto::RenVertex));
+            if (bytes > m.capacity) {
+                rel(m.vb);
+                D3D11_BUFFER_DESC bd{};
+                bd.ByteWidth = std::max<UINT>(bytes * 2, 64 * 1024);
+                bd.Usage = D3D11_USAGE_DYNAMIC;
+                bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+                bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+                m.capacity = SUCCEEDED(device->CreateBuffer(&bd, nullptr, &m.vb)) ? bd.ByteWidth : 0;
+            }
+            D3D11_MAPPED_SUBRESOURCE map{};
+            if (!m.vb || FAILED(context->Map(m.vb, 0, D3D11_MAP_WRITE_DISCARD, 0, &map)))
+                return false;
+            std::memcpy(map.pData, m.verts.data(), bytes);
+            context->Unmap(m.vb, 0);
+            return true;
+        }
+
+        void drawMesh(ID3D11DeviceContext* context, const Mesh& m) {
+            const UINT stride = sizeof(proto::RenVertex), offset = 0;
+            context->IASetVertexBuffers(0, 1, &m.vb, &stride, &offset);
+            for (const auto& b : m.batches) {
+                ID3D11ShaderResourceView* srv = atlasSrv;
+                if (b.texture) {
+                    const auto it = entityTextures.find(b.texture);
+                    if (it == entityTextures.end() || !it->second.srv)
+                        continue;
+                    srv = it->second.srv;
+                }
+                context->PSSetShaderResources(0, 1, &srv);
+                context->Draw(b.count, b.first);
+            }
+            context->PSSetShaderResources(0, 1, &atlasSrv);
+        }
+
         void setPass(ID3D11DeviceContext* context, FrameCB& f, float pass) {
             f.misc[2] = pass;
             D3D11_MAPPED_SUBRESOURCE m{};
@@ -326,7 +436,10 @@ float4 PSMain(VSOut i) : SV_Target {
             case proto::kRenAtlasRegion: onAtlasRegion(context, p, bytes); break;
             case proto::kRenSection: onSection(device, p, bytes); break;
             case proto::kRenClearAll: dropSections(); break;
-            default: break;  // ponytail: avatar, entities, lights, solids, dug: not drawn yet
+            case proto::kRenTexture: onTexture(device, p, bytes); break;
+            case proto::kRenAvatar: onMesh(avatar, p, bytes, false); break;
+            case proto::kRenScene: onMesh(scene, p, bytes, true); break;
+            default: break;  // ponytail: block lights, NPC solids, dug Halo ground, ragdoll: not used yet
             }
         }, kDrainBytesPerFrame);
     }
@@ -381,8 +494,8 @@ float4 PSMain(VSOut i) : SV_Target {
     }
 
     void draw(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11RenderTargetView* rtv, unsigned width, unsigned height, const double anchor[3]) {
-        const bool scene = std::exchange(sceneSeen, false);
-        if (!vs || !atlasSrv || !scene || !haloDsv || haloDepthW != width || haloDepthH != height)
+        const bool sceneDrawn = std::exchange(sceneSeen, false);
+        if (!vs || !atlasSrv || !sceneDrawn || !haloDsv || haloDepthW != width || haloDepthH != height)
             return;  // ponytail: no fallback when Halo renders at another resolution than the window
 
         // Entities relative to a whole block near the player, so floats stay exact.
@@ -393,7 +506,9 @@ float4 PSMain(VSOut i) : SV_Target {
         if (Link::readWorldEntities(entities))
             WorldEntities::build(entities, origin, dynTris, dynCracks, dynLines);
         const bool haveDynamic = uploadDynamic(device, context);
-        if (sections.empty() && !haveDynamic)
+        const bool haveAvatar = uploadMesh(device, context, avatar);
+        const bool haveScene = uploadMesh(device, context, scene);
+        if (sections.empty() && !haveDynamic && !haveAvatar && !haveScene)
             return;
 
         FrameCB fc{};
@@ -427,6 +542,11 @@ float4 PSMain(VSOut i) : SV_Target {
                 context->IASetVertexBuffers(0, 1, &s.vb, &stride, &offset);
                 context->Draw(s.count, 0);
             }
+            context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            if (haveAvatar && setOrigin(context, anchor[0], anchor[1], anchor[2]))  // Steve's feet
+                drawMesh(context, avatar);
+            if (haveScene && setOrigin(context, scene.origin[0], scene.origin[1], scene.origin[2]))
+                drawMesh(context, scene);
             if (haveDynamic && setOrigin(context, origin[0], origin[1], origin[2])) {
                 context->IASetVertexBuffers(0, 1, &dynVb, &stride, &offset);
                 if (!dynTris.empty())
@@ -451,6 +571,15 @@ float4 PSMain(VSOut i) : SV_Target {
         dropSections();
         rel(haloDsv), rel(haloDepth), rel(dynVb);
         dynCapacity = 0;
+        for (auto* m : { &avatar, &scene }) {
+            rel(m->vb);
+            *m = Mesh{};
+        }
+        for (auto& [id, t] : entityTextures) {
+            rel(t.srv);
+            rel(t.tex);
+        }
+        entityTextures.clear();
         rel(atlasSrv), rel(atlas), rel(vs), rel(ps), rel(layout), rel(frameCb), rel(sectionCb), rel(viewProjCb);
         rel(sampler), rel(raster), rel(depthWrite), rel(depthTest), rel(opaque), rel(alphaBlend), rel(crumble), rel(biased);
         atlasW = atlasH = haloDepthW = haloDepthH = 0;

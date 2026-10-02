@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cmath>
 #include <mutex>
+#include <numbers>
 #include <string>
 #include "Collision.hpp"
 #include "Coords.hpp"
@@ -36,7 +37,8 @@ namespace Player {
         std::atomic<bool> puppet{ false };
         std::mutex feetLock;
         Coords::V3 mcFeetHalo{};  // Minecraft's feet, in Halo coordinates
-        Coords::V3 mcEyeHalo{};   // Minecraft's eye (sneaking, swimming...), Halo's camera goes there
+        Coords::V3 mcEyeHalo{};   // Minecraft's camera (eye, or F5's third person), Halo's camera goes there
+        bool lookingBack = false; // F5's second mode: the camera faces Steve
     }
 
     void frame(proto::SkyState& sky, const proto::McState* mc) {
@@ -83,8 +85,17 @@ namespace Player {
             std::lock_guard lock(feetLock);
             mcFeetHalo = Coords::toHalo(mc->x, mc->y, mc->z);
             mcFeetHalo.z += kFeetOffsetUnits;
-            // ponytail: first person only; F5's third-person camera needs Steve's body drawn first.
-            mcEyeHalo = Coords::toHalo(mc->eyeX, mc->eyeY, mc->eyeZ);
+            // F5: Minecraft's camera sits cameraDistance behind the eye (mode 1) or in front of it
+            // looking back (mode 2); WorldRender draws Steve's body there.
+            double back = 0.0;
+            if (mc->cameraMode == 1)
+                back = -mc->cameraDistance;
+            else if (mc->cameraMode == 2)
+                back = mc->cameraDistance;
+            const double yaw = mc->yaw * std::numbers::pi / 180.0, pitch = mc->pitch * std::numbers::pi / 180.0;
+            const double look[3] = { -std::sin(yaw) * std::cos(pitch), -std::sin(pitch), std::cos(yaw) * std::cos(pitch) };
+            mcEyeHalo = Coords::toHalo(mc->eyeX + look[0] * back, mc->eyeY + look[1] * back, mc->eyeZ + look[2] * back);
+            lookingBack = mc->cameraMode == 2;
         }
         if (drive != puppet.exchange(drive))
             log(drive ? "Minecraft is driving Chief" : "Halo is driving Chief");
@@ -124,6 +135,8 @@ namespace Player {
             if (auto* cam = Engine::getPlayerCameraPointer()) {
                 std::lock_guard lock(feetLock);
                 cam->pos = { mcEyeHalo.x, mcEyeHalo.y, mcEyeHalo.z };
+                if (lookingBack)  // ponytail: up is left alone, fine while the pitch is small
+                    cam->fwd = { -cam->fwd.x, -cam->fwd.y, -cam->fwd.z };
             }
         }, nullptr);
 

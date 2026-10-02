@@ -2,41 +2,86 @@
 
 Play Halo: Combat Evolved (Steam MCC) as a Minecraft player.
 
-> **Status: Phase 0 — setup.** Nothing playable yet.
+![Steve in Battle Creek, third person](docs/steve-third-person.jpg)
 
 HaloCraft is a port of [SkyCraft](https://github.com/chasmlol/SkyCraft) (Minecraft in Skyrim) to
-Halo CE. Same idea: real Minecraft Java runs hidden in the background with a Fabric mod, a mod
-inside Halo talks to it through shared memory, and Halo draws everything — Minecraft's hand, HUD and
-inventory in Halo's frame, and blocks and Steve's body in Halo's world.
+Halo CE. Real Minecraft Java runs hidden in the background with a Fabric mod, a mod inside Halo
+talks to it through shared memory, and Halo draws everything: Minecraft's hand, HUD and screens in
+Halo's frame, and Minecraft's blocks, items and Steve's body in Halo's world, lit and hidden behind
+walls by Halo's own camera and depth buffer.
 
-- `fabric/`, `protocol/`: SkyCraft's Minecraft half, kept close to upstream.
-- `halo/` (coming): the Halo side, a mod for [Spark](https://github.com/KodyJKing/spark), the Halo CE
-  MCC mod loader (`vendor/spark`).
-- `skse/`: SkyCraft's original Skyrim plugin, kept as reference for now.
+> **Status: early and experimental.** Building, inventory and Minecraft movement work; Halo's
+> enemies don't know about Minecraft yet.
+
+![Building in Battle Creek](docs/building.jpg)
+
+## What works
+
+- **Minecraft's HUD and screens** inside Halo's frame: hotbar, hearts, hunger, armour, XP, chat,
+  inventory, crafting, toasts. Halo's own HUD and gun are hidden while Minecraft is connected.
+- **Input**: keyboard and mouse go to Minecraft. While a Minecraft screen is open Halo is frozen and
+  the mouse moves Minecraft's cursor.
+- **Movement**: Minecraft's physics (walk, sprint, jump, sneak) on Halo's level geometry, which is
+  streamed to Minecraft as collision. Chief follows Steve; Halo's camera sits at Minecraft's eye.
+- **Building**: place and break blocks on Halo's ground, with cracks, the targeted-block outline,
+  dropped items and pickup. Blocks are drawn with Halo's exact view-projection and depth-tested
+  against Halo's scene.
+- **Third person (F5)**: Steve's own animated body, armour and held items, both camera modes.
+- **Every Halo map gets its own patch of the Minecraft world**, so builds stay on their map.
+
+## Not yet
+
+- Halo's enemies and Minecraft combat (Phase 3).
+- Vehicles (Halo drives Chief while you're in one), cutscenes.
+- Block lighting follows Minecraft's light levels only (always daytime), not Halo's lightmaps.
+- The Minecraft side still says "Skyrim" in its logs.
+
+## Running it (development)
+
+You need Halo: The Master Chief Collection on Steam with Halo: CE installed, Minecraft: Java
+Edition, Visual Studio 2022 Build Tools (C++), Premake 5 and JDK 25. **Offline only, with
+anti-cheat disabled. Never use mods online.**
+
+```powershell
+git clone --recursive https://github.com/festella22/halocraft
+cd halocraft
+premake5 vs2022
+MSBuild.exe halocraft.sln /p:Configuration=Release /p:Platform=Win64
+```
+
+1. Start Minecraft with the mod: `cd fabric; .\gradlew runClient` (a dev account; it hides its
+   window once Halo connects).
+2. `tools\halo_dev.ps1`: installs `halocraft.dll` into MCC's `mods` folder, starts MCC without
+   anti-cheat and injects [Spark](https://github.com/KodyJKing/spark).
+3. Load any Halo CE level (campaign or a local custom game).
+
+`tools\halo_reload.ps1` rebuilds and hot-reloads the Halo side while MCC keeps running.
+
+| Key | Does |
+|---|---|
+| Esc | Halo's pause menu (or closes a Minecraft screen) |
+| E, 1-9, scroll, Q, T, / | Minecraft, as usual |
+| F5 | Minecraft's camera: first person, behind, in front |
+| F9 | Spark: unload all mods |
+
+## Layout
+
+| Folder | |
+|---|---|
+| `halo/` | The Halo side: a Spark mod (C++, DirectX 11) |
+| `fabric/` | SkyCraft's Minecraft mod (Java, Fabric), with small HaloCraft changes |
+| `protocol/` | The shared-memory layout both sides follow |
+| `vendor/spark/` | Spark, the Halo CE MCC mod loader (submodule) |
+| `skse/` | SkyCraft's Skyrim plugin, kept as reference |
 
 How SkyCraft works: [docs/SKYCRAFT.md](docs/SKYCRAFT.md) and [docs/DESIGN.md](docs/DESIGN.md).
 
-## Plan
-
-| Phase | Done when |
-|---|---|
-| 0. Setup | Our mod DLL loads inside MCC |
-| 1. Link + HUD | The real Minecraft hotbar, hearts, hand and inventory show in Halo |
-| 2. Movement | Minecraft physics on Halo's levels, camera follows Minecraft |
-| 3. Combat | Halo enemies take Minecraft hits, and hit back |
-| 4. World | Blocks and Steve's body drawn in Halo's world |
-
-## Requirements
-
-- Halo: The Master Chief Collection on Steam, with Halo: CE installed. Play **offline, with
-  anti-cheat disabled** — never use mods online.
-- Minecraft: Java Edition.
-
 ## Credits
 
-- [SkyCraft](https://github.com/chasmlol/SkyCraft) by chasmlol (MIT) — the whole two-games design
-  and the Minecraft mod.
-- [Spark](https://github.com/KodyJKing/spark) by KodyJKing — Halo CE MCC mod loader and SDK
+- [SkyCraft](https://github.com/chasmlol/SkyCraft) by chasmlol (MIT): the whole two-games design,
+  the Minecraft mod, and the code the Halo side's link, compositor, collision voxelizer and entity
+  geometry are ported from.
+- [Spark](https://github.com/KodyJKing/spark) by KodyJKing: Halo CE MCC mod loader and SDK
   (linked as a submodule, not copied).
 
 Fan project, not affiliated with Mojang, Microsoft, 343 Industries or Halo Studios. You need to own
