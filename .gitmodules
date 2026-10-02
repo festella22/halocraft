@@ -2,3 +2,6 @@
 	path = skse/extern/CommonLibSSE-NG
 	url = https://github.com/alandtse/CommonLibVR.git
 	branch = ng
+[submodule "vendor/spark"]
+	path = vendor/spark
+	url = https://github.com/KodyJKing/spark.git
