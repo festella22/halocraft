@@ -326,7 +326,8 @@ float4 PSMain(VSOut i) : SV_Target {
             }
             D3DState saved;
             saved.save(context);
-            WorldRender::draw(device, context, rtv, bb.Width, bb.Height);  // blocks go under the hand and HUD
+            const double anchor[3] = { mc.x, mc.y, mc.z };
+            WorldRender::draw(device, context, rtv, bb.Width, bb.Height, anchor);  // blocks go under the hand and HUD
             if (haveFrame)
                 drawOverlay(rtv, bb, mc);
             saved.restore(context);

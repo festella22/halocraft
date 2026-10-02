@@ -14,6 +14,8 @@ namespace Link {
     void heartbeat();
     void writeSkyState(const proto::SkyState& state);
     bool readMcState(proto::McState& out);
+    // Dropped items, arrows, block cracks and the targeted block's outline (seqlock copy).
+    bool readWorldEntities(proto::WorldEntities& out);
     // Render ring (Minecraft -> Halo): calls fn(type, payload, bytes) for each message, until
     // maxBytes have been consumed this call.
     template <class Fn> void drainRender(Fn&& fn, std::uint64_t maxBytes);

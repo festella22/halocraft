@@ -1,7 +1,10 @@
 #include "Link.hpp"
+#define NOMINMAX
 #include <Windows.h>
 #include <sddl.h>
+#include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstring>
 #include <intrin.h>
 #include <string>
@@ -126,6 +129,27 @@ namespace Link {
                 continue;
             }
             std::memcpy(&out, src, sizeof(out));
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (seq.load(std::memory_order_relaxed) == s1)
+                return true;
+        }
+        return false;
+    }
+
+    bool readWorldEntities(proto::WorldEntities& out) {
+        if (!base)
+            return false;
+        auto* src = at<proto::WorldEntities>(proto::kOffWorldEntities);
+        auto seq = atomic(src->seq);
+        for (int attempt = 0; attempt < 16; ++attempt) {
+            const auto s1 = seq.load(std::memory_order_acquire);
+            if (s1 & 1) {
+                _mm_pause();
+                continue;
+            }
+            const auto count = std::min(src->count, proto::kMaxWorldEntities);
+            std::memcpy(&out, src, offsetof(proto::WorldEntities, entities) + sizeof(proto::WorldEntity) * count);
+            out.count = count;
             std::atomic_thread_fence(std::memory_order_acquire);
             if (seq.load(std::memory_order_relaxed) == s1)
                 return true;

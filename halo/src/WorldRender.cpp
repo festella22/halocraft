@@ -2,7 +2,10 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <d3dcompiler.h>
+#include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <vector>
 #include <format>
 #include <string>
 #include <unordered_map>
@@ -10,6 +13,7 @@
 #include "Coords.hpp"
 #include "Link.hpp"
 #include "Log.hpp"
+#include "WorldEntities.hpp"
 
 namespace WorldRender {
     namespace {
@@ -58,6 +62,12 @@ namespace WorldRender {
         UINT haloDepthW = 0, haloDepthH = 0;
         bool sceneSeen = false;  // Halo drew its level (and we copied its matrix) since the last Present
 
+        // Per-frame things (dropped items, arrows, cracks, the outline), rebuilt every frame.
+        proto::WorldEntities entities{};
+        std::vector<proto::RenVertex> dynTris, dynLines;
+        ID3D11Buffer* dynVb = nullptr;
+        UINT dynCapacity = 0;
+
         constexpr char kShader[] = R"(
 cbuffer Frame : register(b0) { float4 misc; };
 cbuffer Section : register(b1) { float4 origin; };
@@ -80,7 +90,7 @@ float Curve(float l) { return l / (4.0 - 3.0 * l); }  // Minecraft's light-level
 // Minecraft's fixed face shading by Direction ordinal + 1: none, down, up, north, south, west, east.
 static const float kShade[8] = { 1.0, 0.5, 1.0, 0.8, 0.8, 0.6, 0.6, 1.0 };
 float4 PSMain(VSOut i) : SV_Target {
-	float4 tex = atlas.Sample(samp, i.uv);
+	float4 tex = (i.flags & 0x100) != 0 ? float4(1, 1, 1, 1) : atlas.Sample(samp, i.uv);  // 0x100: untextured (outline)
 	bool translucent = (i.flags & 2) != 0;
 	if (translucent != (misc.z > 0.5)) discard;
 	if ((i.flags & 1) != 0 && tex.a < 0.1) discard;  // cutout: leaves, glass panes, flowers
@@ -248,6 +258,45 @@ float4 PSMain(VSOut i) : SV_Target {
                 sections.emplace(k, s);
         }
 
+        // dynTris then dynLines into one dynamic vertex buffer.
+        bool uploadDynamic(ID3D11Device* device, ID3D11DeviceContext* context) {
+            const UINT bytes = UINT((dynTris.size() + dynLines.size()) * sizeof(proto::RenVertex));
+            if (!bytes)
+                return false;
+            if (bytes > dynCapacity) {
+                rel(dynVb);
+                D3D11_BUFFER_DESC bd{};
+                bd.ByteWidth = std::max<UINT>(bytes * 2, 64 * 1024);
+                bd.Usage = D3D11_USAGE_DYNAMIC;
+                bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+                bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+                if (FAILED(device->CreateBuffer(&bd, nullptr, &dynVb))) {
+                    dynCapacity = 0;
+                    return false;
+                }
+                dynCapacity = bd.ByteWidth;
+            }
+            D3D11_MAPPED_SUBRESOURCE m{};
+            if (FAILED(context->Map(dynVb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
+                return false;
+            auto* dst = static_cast<std::uint8_t*>(m.pData);
+            std::memcpy(dst, dynTris.data(), dynTris.size() * sizeof(proto::RenVertex));
+            std::memcpy(dst + dynTris.size() * sizeof(proto::RenVertex), dynLines.data(), dynLines.size() * sizeof(proto::RenVertex));
+            context->Unmap(dynVb, 0);
+            return true;
+        }
+
+        bool setOrigin(ID3D11DeviceContext* context, double mx, double my, double mz) {
+            const auto origin = Coords::toHalo(mx, my, mz);
+            const SectionCB sc{ { origin.x, origin.y, origin.z, 0.0f } };
+            D3D11_MAPPED_SUBRESOURCE m{};
+            if (FAILED(context->Map(sectionCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
+                return false;
+            std::memcpy(m.pData, &sc, sizeof(sc));
+            context->Unmap(sectionCb, 0);
+            return true;
+        }
+
         void setPass(ID3D11DeviceContext* context, FrameCB& f, float pass) {
             f.misc[2] = pass;
             D3D11_MAPPED_SUBRESOURCE m{};
@@ -321,10 +370,20 @@ float4 PSMain(VSOut i) : SV_Target {
         device->Release();
     }
 
-    void draw(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11RenderTargetView* rtv, unsigned width, unsigned height) {
+    void draw(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11RenderTargetView* rtv, unsigned width, unsigned height, const double anchor[3]) {
         const bool scene = std::exchange(sceneSeen, false);
-        if (!vs || !atlasSrv || sections.empty() || !scene || !haloDsv || haloDepthW != width || haloDepthH != height)
+        if (!vs || !atlasSrv || !scene || !haloDsv || haloDepthW != width || haloDepthH != height)
             return;  // ponytail: no fallback when Halo renders at another resolution than the window
+
+        // Entities relative to a whole block near the player, so floats stay exact.
+        const double origin[3] = { std::floor(anchor[0]), std::floor(anchor[1]), std::floor(anchor[2]) };
+        dynTris.clear();
+        dynLines.clear();
+        if (Link::readWorldEntities(entities))
+            WorldEntities::build(entities, origin, dynTris, dynLines);
+        const bool haveDynamic = uploadDynamic(device, context);
+        if (sections.empty() && !haveDynamic)
+            return;
 
         FrameCB fc{};
         fc.misc[0] = Coords::kBlocksPerUnit;
@@ -349,24 +408,30 @@ float4 PSMain(VSOut i) : SV_Target {
             setPass(context, fc, float(pass));
             context->OMSetBlendState(pass ? alphaBlend : opaque, factor, 0xFFFFFFFF);
             context->OMSetDepthStencilState(pass ? depthTest : depthWrite, 0);
+            const UINT stride = sizeof(proto::RenVertex), offset = 0;
+            context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             for (const auto& [k, s] : sections) {
-                const auto origin = Coords::toHalo(s.sx * 16.0, s.sy * 16.0, s.sz * 16.0);
-                const SectionCB sc{ { origin.x, origin.y, origin.z, 0.0f } };
-                D3D11_MAPPED_SUBRESOURCE m{};
-                if (FAILED(context->Map(sectionCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
+                if (!setOrigin(context, s.sx * 16.0, s.sy * 16.0, s.sz * 16.0))
                     continue;
-                std::memcpy(m.pData, &sc, sizeof(sc));
-                context->Unmap(sectionCb, 0);
-                const UINT stride = sizeof(proto::RenVertex), offset = 0;
                 context->IASetVertexBuffers(0, 1, &s.vb, &stride, &offset);
                 context->Draw(s.count, 0);
+            }
+            if (haveDynamic && setOrigin(context, origin[0], origin[1], origin[2])) {
+                context->IASetVertexBuffers(0, 1, &dynVb, &stride, &offset);
+                if (!dynTris.empty())
+                    context->Draw(UINT(dynTris.size()), 0);
+                if (!dynLines.empty()) {
+                    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+                    context->Draw(UINT(dynLines.size()), UINT(dynTris.size()));
+                }
             }
         }
     }
 
     void release() {
         dropSections();
-        rel(haloDsv), rel(haloDepth);
+        rel(haloDsv), rel(haloDepth), rel(dynVb);
+        dynCapacity = 0;
         rel(atlasSrv), rel(atlas), rel(vs), rel(ps), rel(layout), rel(frameCb), rel(sectionCb), rel(viewProjCb);
         rel(sampler), rel(raster), rel(depthWrite), rel(depthTest), rel(opaque), rel(alphaBlend);
         atlasW = atlasH = haloDepthW = haloDepthH = 0;

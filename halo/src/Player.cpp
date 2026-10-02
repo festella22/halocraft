@@ -36,6 +36,7 @@ namespace Player {
         std::atomic<bool> puppet{ false };
         std::mutex feetLock;
         Coords::V3 mcFeetHalo{};  // Minecraft's feet, in Halo coordinates
+        Coords::V3 mcEyeHalo{};   // Minecraft's eye (sneaking, swimming...), Halo's camera goes there
     }
 
     void frame(proto::SkyState& sky, const proto::McState* mc) {
@@ -82,6 +83,8 @@ namespace Player {
             std::lock_guard lock(feetLock);
             mcFeetHalo = Coords::toHalo(mc->x, mc->y, mc->z);
             mcFeetHalo.z += kFeetOffsetUnits;
+            // ponytail: first person only; F5's third-person camera needs Steve's body drawn first.
+            mcEyeHalo = Coords::toHalo(mc->eyeX, mc->eyeY, mc->eyeZ);
         }
         if (drive != puppet.exchange(drive))
             log(drive ? "Minecraft is driving Chief" : "Halo is driving Chief");
@@ -110,6 +113,17 @@ namespace Player {
                 pc->walkX = pc->walkY = 0.0f;
                 pc->actions = 0;
                 pc->gunTrigger = 0.0f;
+            }
+        }, nullptr);
+
+        // Halo's camera sits at Minecraft's eye, so Halo's crosshair is exactly Minecraft's aim.
+        Spark::UpdateCamera::addHandler(owner, +[](void*, Spark::UpdateCamera::Cursor next, float dt) {
+            next(dt);
+            if (!puppet)
+                return;
+            if (auto* cam = Engine::getPlayerCameraPointer()) {
+                std::lock_guard lock(feetLock);
+                cam->pos = { mcEyeHalo.x, mcEyeHalo.y, mcEyeHalo.z };
             }
         }, nullptr);
 

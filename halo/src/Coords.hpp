@@ -4,10 +4,12 @@
 #include <numbers>
 #include <string_view>
 
-// Halo (Z up, world units) <-> Minecraft (Y up, blocks). One Halo world unit is 10 ft = 3.048 m,
-// and a block is 1 m, so Chief (~0.7 units, 2.1 m) and Steve (1.8 blocks) come out about right.
+// Halo (Z up, world units) <-> Minecraft (Y up, blocks). Scaled so the players match: Chief's eye
+// is 0.62 units above his feet, Steve's 1.62 blocks (Chief's ~0.7 units then come out at Steve's
+// 1.8 blocks, so Halo's doors and corridors fit him). What Halo's crosshair is on is then what
+// Minecraft targets. (A block ends up 0.38 units, about 1.2 m at Halo's 10 ft per unit.)
 namespace Coords {
-    inline constexpr float kBlocksPerUnit = 3.048f;
+    inline constexpr float kBlocksPerUnit = 1.62f / 0.62f;
 
     // Every Halo map lives in its own patch of the one Minecraft world, so blocks built on one
     // map don't show up on another. Patches sit on an 8x8 grid, 8192 blocks apart (Halo maps
