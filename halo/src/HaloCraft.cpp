@@ -9,6 +9,7 @@
 #include "Log.hpp"
 #include "Overlay.hpp"
 #include "Player.hpp"
+#include "WorldRender.hpp"
 #include "engine/scripting/Scripting.hpp"
 #include "spark/SparkAPI.h"
 #include "spark/hook/Hooks.hpp"
@@ -37,6 +38,10 @@ namespace {
             Overlay::install();
             Input::install();
             Player::install(modId_);
+            Spark::RenderBSPAlbedo::addHandler(modId_, +[](void*, Spark::RenderBSPAlbedo::Cursor next) {
+                next();
+                WorldRender::onSceneRendered();
+            }, nullptr);
 
             // A Minecraft screen (inventory, crafting, chat) owns the mouse and keys: freeze Halo's
             // movement and look until it closes.

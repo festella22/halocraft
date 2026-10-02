@@ -2,21 +2,23 @@
 #define NOMINMAX
 #include <Windows.h>
 #include <d3dcompiler.h>
-#include <cmath>
 #include <cstring>
+#include <format>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include "Coords.hpp"
 #include "Link.hpp"
 #include "Log.hpp"
-#include "engine/player.hpp"
 
 namespace WorldRender {
     namespace {
         namespace proto = skycraft::proto;
 
-        constexpr float kNear = 0.01f, kFar = 2000.0f;  // Halo units
         constexpr std::uint64_t kDrainBytesPerFrame = 48ull << 20;  // the 21 MB atlas must fit in one go
+        // Halo's level shader keeps its view-projection in the first 4 rows of vertex constant
+        // buffer 0 (row-major, Halo world space, reversed infinite depth: depth = near / view z).
+        constexpr UINT kViewProjBytes = 64;
 
         struct Section {
             ID3D11Buffer* vb = nullptr;
@@ -25,26 +27,22 @@ namespace WorldRender {
         };
 
         struct alignas(16) FrameCB {
-            float right[4], up[4], fwd[4];
-            float proj[4];  // 1/tan(hfov/2), 1/tan(vfov/2), depth scale, depth bias
             float misc[4];  // blocks per unit, daylight, pass (0 solid, 1 translucent), -
         };
         struct alignas(16) SectionCB {
-            float offset[4];  // section origin relative to the camera, Halo units
+            float origin[4];  // section origin, Halo world units
         };
 
         std::unordered_map<std::uint64_t, Section> sections;
         ID3D11Texture2D* atlas = nullptr;
         ID3D11ShaderResourceView* atlasSrv = nullptr;
         UINT atlasW = 0, atlasH = 0;
-        ID3D11Texture2D* depthTex = nullptr;
-        ID3D11DepthStencilView* dsv = nullptr;
-        UINT depthW = 0, depthH = 0;
         ID3D11VertexShader* vs = nullptr;
         ID3D11PixelShader* ps = nullptr;
         ID3D11InputLayout* layout = nullptr;
         ID3D11Buffer* frameCb = nullptr;
         ID3D11Buffer* sectionCb = nullptr;
+        ID3D11Buffer* viewProjCb = nullptr;  // filled GPU-side from Halo's own constants every frame
         ID3D11SamplerState* sampler = nullptr;
         ID3D11RasterizerState* raster = nullptr;
         ID3D11DepthStencilState* depthWrite = nullptr;
@@ -53,18 +51,25 @@ namespace WorldRender {
         ID3D11BlendState* alphaBlend = nullptr;
         bool initFailed = false;
 
+        // Halo's scene depth (R32G8X24_TYPELESS) and our depth view of it: blocks are tested and
+        // written against it, so Halo's walls hide blocks and blocks hide each other.
+        ID3D11Texture2D* haloDepth = nullptr;
+        ID3D11DepthStencilView* haloDsv = nullptr;
+        UINT haloDepthW = 0, haloDepthH = 0;
+        bool sceneSeen = false;  // Halo drew its level (and we copied its matrix) since the last Present
+
         constexpr char kShader[] = R"(
-cbuffer Frame : register(b0) { float4 camRight; float4 camUp; float4 camFwd; float4 proj; float4 misc; };
-cbuffer Section : register(b1) { float4 offset; };
+cbuffer Frame : register(b0) { float4 misc; };
+cbuffer Section : register(b1) { float4 origin; };
+cbuffer Halo : register(b2) { float4 vp0; float4 vp1; float4 vp2; float4 vp3; };
 Texture2D atlas : register(t0);
 SamplerState samp : register(s0);
 struct VSIn { float3 pos : POSITION; float2 uv : TEXCOORD0; float4 color : COLOR0; uint light : TEXCOORD1; uint flags : TEXCOORD2; };
 struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; float4 color : COLOR0; float2 light : TEXCOORD1; nointerpolation uint flags : TEXCOORD2; };
 VSOut VSMain(VSIn i) {
 	VSOut o;
-	float3 rel = offset.xyz + float3(i.pos.x, -i.pos.z, i.pos.y) / misc.x;  // Minecraft -> Halo axes
-	float w = dot(rel, camFwd.xyz);
-	o.pos = float4(dot(rel, camRight.xyz) * proj.x, dot(rel, camUp.xyz) * proj.y, w * proj.z + proj.w, w);
+	float4 world = float4(origin.xyz + float3(i.pos.x, -i.pos.z, i.pos.y) / misc.x, 1.0);  // Minecraft -> Halo axes
+	o.pos = float4(dot(vp0, world), dot(vp1, world), dot(vp2, world), dot(vp3, world));
 	o.uv = i.uv;
 	o.color = i.color;
 	o.light = float2(i.light & 0xFF, (i.light >> 8) & 0xFF) / 15.0;
@@ -136,6 +141,10 @@ float4 PSMain(VSOut i) : SV_Target {
             device->CreateBuffer(&cbd, nullptr, &frameCb);
             cbd.ByteWidth = sizeof(SectionCB);
             device->CreateBuffer(&cbd, nullptr, &sectionCb);
+            cbd.Usage = D3D11_USAGE_DEFAULT;  // a copy destination, never touched by the CPU
+            cbd.CPUAccessFlags = 0;
+            cbd.ByteWidth = kViewProjBytes;
+            device->CreateBuffer(&cbd, nullptr, &viewProjCb);
 
             D3D11_SAMPLER_DESC sd{};
             sd.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
@@ -145,14 +154,14 @@ float4 PSMain(VSOut i) : SV_Target {
 
             D3D11_RASTERIZER_DESC rd{};
             rd.FillMode = D3D11_FILL_SOLID;
-            rd.CullMode = D3D11_CULL_NONE;  // ponytail: no back-face culling; winding isn't pinned down yet
+            rd.CullMode = D3D11_CULL_NONE;  // ponytail: no back-face culling; Minecraft's winding isn't pinned down
             rd.DepthClipEnable = TRUE;
             device->CreateRasterizerState(&rd, &raster);
 
             D3D11_DEPTH_STENCIL_DESC dd{};
             dd.DepthEnable = TRUE;
             dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
-            dd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+            dd.DepthFunc = D3D11_COMPARISON_GREATER_EQUAL;  // reversed depth: nearer is larger
             device->CreateDepthStencilState(&dd, &depthWrite);
             dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
             device->CreateDepthStencilState(&dd, &depthTest);
@@ -170,7 +179,8 @@ float4 PSMain(VSOut i) : SV_Target {
             rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
             device->CreateBlendState(&bd, &alphaBlend);
 
-            const bool ok = vs && ps && layout && frameCb && sectionCb && sampler && raster && depthWrite && depthTest && opaque && alphaBlend;
+            const bool ok = vs && ps && layout && frameCb && sectionCb && viewProjCb && sampler && raster && depthWrite && depthTest && opaque &&
+                            alphaBlend;
             log(ok ? "block renderer ready" : "block renderer failed to initialize");
             initFailed = !ok;
             return ok;
@@ -238,27 +248,6 @@ float4 PSMain(VSOut i) : SV_Target {
                 sections.emplace(k, s);
         }
 
-        bool ensureDepth(ID3D11Device* device, UINT w, UINT h) {
-            if (dsv && depthW == w && depthH == h)
-                return true;
-            rel(dsv);
-            rel(depthTex);
-            D3D11_TEXTURE2D_DESC td{};
-            td.Width = w;
-            td.Height = h;
-            td.MipLevels = 1;
-            td.ArraySize = 1;
-            td.Format = DXGI_FORMAT_D32_FLOAT;
-            td.SampleDesc.Count = 1;
-            td.Usage = D3D11_USAGE_DEFAULT;
-            td.BindFlags = D3D11_BIND_DEPTH_STENCIL;
-            if (FAILED(device->CreateTexture2D(&td, nullptr, &depthTex)) || FAILED(device->CreateDepthStencilView(depthTex, nullptr, &dsv)))
-                return false;
-            depthW = w;
-            depthH = h;
-            return true;
-        }
-
         void setPass(ID3D11DeviceContext* context, FrameCB& f, float pass) {
             f.misc[2] = pass;
             D3D11_MAPPED_SUBRESOURCE m{};
@@ -283,39 +272,65 @@ float4 PSMain(VSOut i) : SV_Target {
         }, kDrainBytesPerFrame);
     }
 
-    void draw(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11RenderTargetView* rtv, unsigned width, unsigned height) {
-        if (!vs || !atlasSrv || sections.empty() || !ensureDepth(device, width, height))
+    void onSceneRendered() {
+        if (!vs)
             return;
-        const auto* cam = Engine::getPlayerCameraPointer();
-        if (!cam || !std::isfinite(cam->fov) || cam->fov <= 0.0f)
-            return;
+        ID3D11Device* device = nullptr;
+        frameCb->GetDevice(&device);
+        ID3D11DeviceContext* context = nullptr;
+        device->GetImmediateContext(&context);
 
-        // Halo's camera basis (right-handed, Z up): right = forward x up.
-        const float f[3] = { cam->fwd.x, cam->fwd.y, cam->fwd.z };
-        float u[3] = { cam->up.x, cam->up.y, cam->up.z };
-        float r[3] = { f[1] * u[2] - f[2] * u[1], f[2] * u[0] - f[0] * u[2], f[0] * u[1] - f[1] * u[0] };
-        const float rl = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
-        if (rl < 1e-6f)
-            return;
-        for (float& c : r)
-            c /= rl;
-        u[0] = r[1] * f[2] - r[2] * f[1], u[1] = r[2] * f[0] - r[0] * f[2], u[2] = r[0] * f[1] - r[1] * f[0];
+        // Halo's view-projection, exactly as it drew this frame's level: GPU-to-GPU, no stall.
+        ID3D11Buffer* haloCb = nullptr;
+        context->VSGetConstantBuffers(0, 1, &haloCb);
+        const bool copied = haloCb != nullptr;
+        if (haloCb) {
+            const D3D11_BOX box{ 0, 0, 0, kViewProjBytes, 1, 1 };
+            context->CopySubresourceRegion(viewProjCb, 0, 0, 0, 0, haloCb, 0, &box);
+            rel(haloCb);
+        }
+
+        // And its depth buffer (kept across frames until Halo swaps it for another).
+        ID3D11DepthStencilView* sceneDsv = nullptr;
+        context->OMGetRenderTargets(0, nullptr, &sceneDsv);
+        if (sceneDsv) {
+            ID3D11Resource* res = nullptr;
+            sceneDsv->GetResource(&res);
+            ID3D11Texture2D* tex = nullptr;
+            if (res && SUCCEEDED(res->QueryInterface(&tex)) && tex != haloDepth) {
+                rel(haloDsv);
+                rel(haloDepth);
+                haloDepth = tex;
+                D3D11_TEXTURE2D_DESC d{};
+                tex->GetDesc(&d);
+                D3D11_DEPTH_STENCIL_VIEW_DESC dv{};
+                dv.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;  // Halo's is R32G8X24_TYPELESS
+                dv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+                const HRESULT hr = device->CreateDepthStencilView(tex, &dv, &haloDsv);
+                haloDepthW = d.Width;
+                haloDepthH = d.Height;
+                log(std::format("Halo depth {}x{} format {}: {}", d.Width, d.Height, int(d.Format), SUCCEEDED(hr) ? "blocks hide behind Halo" : "no depth view"));
+            } else if (tex) {
+                tex->Release();
+            }
+            rel(res);
+            sceneDsv->Release();
+        }
+        sceneSeen = copied;
+        context->Release();
+        device->Release();
+    }
+
+    void draw(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11RenderTargetView* rtv, unsigned width, unsigned height) {
+        const bool scene = std::exchange(sceneSeen, false);
+        if (!vs || !atlasSrv || sections.empty() || !scene || !haloDsv || haloDepthW != width || haloDepthH != height)
+            return;  // ponytail: no fallback when Halo renders at another resolution than the window
 
         FrameCB fc{};
-        std::memcpy(fc.right, r, sizeof(r));
-        std::memcpy(fc.up, u, sizeof(u));
-        std::memcpy(fc.fwd, f, sizeof(f));
-        const float tanH = std::tan(cam->fov * 0.5f);  // Halo's FOV is horizontal
-        fc.proj[0] = 1.0f / tanH;
-        fc.proj[1] = float(width) / (float(height) * tanH);
-        fc.proj[2] = kFar / (kFar - kNear);
-        fc.proj[3] = -kNear * kFar / (kFar - kNear);
         fc.misc[0] = Coords::kBlocksPerUnit;
         fc.misc[1] = 1.0f;  // ponytail: always day; Halo's lightmaps could drive this later
 
-        context->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
-        // ponytail: our own depth buffer only, so Halo's walls don't hide blocks behind them yet.
-        context->OMSetRenderTargets(1, &rtv, dsv);
+        context->OMSetRenderTargets(1, &rtv, haloDsv);
         const D3D11_VIEWPORT vp{ 0, 0, float(width), float(height), 0, 1 };
         context->RSSetViewports(1, &vp);
         context->RSSetState(raster);
@@ -323,8 +338,8 @@ float4 PSMain(VSOut i) : SV_Target {
         context->IASetInputLayout(layout);
         context->VSSetShader(vs, nullptr, 0);
         context->PSSetShader(ps, nullptr, 0);
-        ID3D11Buffer* cbs[2] = { frameCb, sectionCb };
-        context->VSSetConstantBuffers(0, 2, cbs);
+        ID3D11Buffer* cbs[3] = { frameCb, sectionCb, viewProjCb };
+        context->VSSetConstantBuffers(0, 3, cbs);
         context->PSSetConstantBuffers(0, 2, cbs);
         context->PSSetShaderResources(0, 1, &atlasSrv);
         context->PSSetSamplers(0, 1, &sampler);
@@ -335,12 +350,8 @@ float4 PSMain(VSOut i) : SV_Target {
             context->OMSetBlendState(pass ? alphaBlend : opaque, factor, 0xFFFFFFFF);
             context->OMSetDepthStencilState(pass ? depthTest : depthWrite, 0);
             for (const auto& [k, s] : sections) {
-                // Section origin relative to the camera, in Halo units.
                 const auto origin = Coords::toHalo(s.sx * 16.0, s.sy * 16.0, s.sz * 16.0);
-                SectionCB sc{};
-                sc.offset[0] = origin.x - cam->pos.x;
-                sc.offset[1] = origin.y - cam->pos.y;
-                sc.offset[2] = origin.z - cam->pos.z;
+                const SectionCB sc{ { origin.x, origin.y, origin.z, 0.0f } };
                 D3D11_MAPPED_SUBRESOURCE m{};
                 if (FAILED(context->Map(sectionCb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
                     continue;
@@ -355,9 +366,11 @@ float4 PSMain(VSOut i) : SV_Target {
 
     void release() {
         dropSections();
-        rel(atlasSrv), rel(atlas), rel(dsv), rel(depthTex), rel(vs), rel(ps), rel(layout), rel(frameCb), rel(sectionCb);
+        rel(haloDsv), rel(haloDepth);
+        rel(atlasSrv), rel(atlas), rel(vs), rel(ps), rel(layout), rel(frameCb), rel(sectionCb), rel(viewProjCb);
         rel(sampler), rel(raster), rel(depthWrite), rel(depthTest), rel(opaque), rel(alphaBlend);
-        atlasW = atlasH = depthW = depthH = 0;
+        atlasW = atlasH = haloDepthW = haloDepthH = 0;
+        sceneSeen = false;
         initFailed = false;
     }
 }

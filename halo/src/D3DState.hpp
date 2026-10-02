@@ -20,7 +20,7 @@ struct D3DState {
     UINT vbStride = 0, vbOffset = 0;
     ID3D11VertexShader* vs = nullptr;
     ID3D11PixelShader* ps = nullptr;
-    ID3D11Buffer* vsCb[2]{};
+    ID3D11Buffer* vsCb[3]{};
     ID3D11Buffer* psCb[2]{};
     ID3D11ShaderResourceView* srv = nullptr;
     ID3D11SamplerState* sampler = nullptr;
@@ -36,7 +36,7 @@ struct D3DState {
         c->IAGetVertexBuffers(0, 1, &vb, &vbStride, &vbOffset);
         c->VSGetShader(&vs, nullptr, nullptr);
         c->PSGetShader(&ps, nullptr, nullptr);
-        c->VSGetConstantBuffers(0, 2, vsCb);
+        c->VSGetConstantBuffers(0, 3, vsCb);
         c->PSGetConstantBuffers(0, 2, psCb);
         c->PSGetShaderResources(0, 1, &srv);
         c->PSGetSamplers(0, 1, &sampler);
@@ -53,7 +53,7 @@ struct D3DState {
         c->IASetVertexBuffers(0, 1, &vb, &vbStride, &vbOffset);
         c->VSSetShader(vs, nullptr, 0);
         c->PSSetShader(ps, nullptr, 0);
-        c->VSSetConstantBuffers(0, 2, vsCb);
+        c->VSSetConstantBuffers(0, 3, vsCb);
         c->PSSetConstantBuffers(0, 2, psCb);
         c->PSSetShaderResources(0, 1, &srv);
         c->PSSetSamplers(0, 1, &sampler);
