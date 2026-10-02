@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstring>
 #include <intrin.h>
+#include <mutex>
 #include <string>
 #include <vector>
 #include "Log.hpp"
@@ -186,9 +187,43 @@ namespace Link {
         return true;
     }
 
+    void writeActors(const proto::ActorRecord* records, std::uint32_t count) {
+        if (!base)
+            return;
+        auto* table = at<proto::ActorTable>(proto::kOffActorTable);
+        auto seq = atomic(table->seq);
+        const auto s = seq.load(std::memory_order_relaxed);
+        seq.store(s + 1, std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_release);
+        count = std::min(count, proto::kMaxActors);
+        table->count = count;
+        if (count)
+            std::memcpy(table->actors, records, sizeof(proto::ActorRecord) * count);
+        seq.store(s + 2, std::memory_order_release);
+    }
+
+    bool popEvent(proto::McEvent& out) {
+        if (!base)
+            return false;
+        auto* ring = base + proto::kOffEventRing;
+        auto& headRef = *reinterpret_cast<std::uint64_t*>(ring + proto::kEventRingHeadOff);
+        auto& tailRef = *reinterpret_cast<std::uint64_t*>(ring + proto::kEventRingTailOff);
+        const auto head = atomic(headRef).load(std::memory_order_acquire);
+        auto tail = atomic(tailRef).load(std::memory_order_relaxed);
+        if (tail >= head)
+            return false;
+        if (head - tail > proto::kEventRingEntries)  // fell behind: skip what was overwritten
+            tail = head - proto::kEventRingEntries;
+        out = reinterpret_cast<const proto::McEvent*>(ring + proto::kEventRingDataOff)[tail & (proto::kEventRingEntries - 1)];
+        atomic(tailRef).store(tail + 1, std::memory_order_release);
+        return true;
+    }
+
     void pushInput(proto::InputType type, std::uint16_t code, std::int32_t a, std::int32_t b, std::int32_t c) {
         if (!base)
             return;
+        static std::mutex producer;
+        std::lock_guard lock(producer);
         auto* ring = base + proto::kOffInputRing;
         auto& headRef = *reinterpret_cast<std::uint64_t*>(ring + proto::kInputRingHeadOff);
         auto& tailRef = *reinterpret_cast<std::uint64_t*>(ring + proto::kInputRingTailOff);

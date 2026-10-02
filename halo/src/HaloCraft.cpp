@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include "Combat.hpp"
 #include "Input.hpp"
 #include "Link.hpp"
 #include "Log.hpp"
@@ -38,6 +39,7 @@ namespace {
             Overlay::install();
             Input::install();
             Player::install(modId_);
+            Combat::install(modId_);
             Spark::RenderBSPAlbedo::addHandler(modId_, +[](void*, Spark::RenderBSPAlbedo::Cursor next) {
                 next();
                 WorldRender::onSceneRendered();

@@ -10,8 +10,8 @@ talks to it through shared memory, and Halo draws everything: Minecraft's hand, 
 Halo's frame, and Minecraft's blocks, items and Steve's body in Halo's world, lit and hidden behind
 walls by Halo's own camera and depth buffer.
 
-> **Status: early and experimental.** Building, inventory and Minecraft movement work; Halo's
-> enemies don't know about Minecraft yet.
+> **Status: early and experimental.** Building, inventory, Minecraft movement and third person work
+> and were tested live. Combat with Halo's enemies is written but not tested in a campaign yet.
 
 ![Building in Battle Creek](docs/building.jpg)
 
@@ -29,9 +29,14 @@ walls by Halo's own camera and depth buffer.
 - **Third person (F5)**: Steve's own animated body, armour and held items, both camera modes.
 - **Every Halo map gets its own patch of the Minecraft world**, so builds stay on their map.
 
+- **Combat (untested)**: every Halo character near you is a hittable stand-in in Minecraft (swords,
+  crits, knockback, bows); Minecraft's hits take Halo's shield then health (20 Minecraft damage per
+  bar) and kills go through Halo's own damage code; Halo's damage to Chief becomes Minecraft damage
+  (Chief's shield + health = Steve's 20 health), and Steve dying kills Chief.
+
 ## Not yet
 
-- Halo's enemies and Minecraft combat (Phase 3).
+- Halo characters don't flinch from non-lethal Minecraft hits.
 - Vehicles (Halo drives Chief while you're in one), cutscenes.
 - Block lighting follows Minecraft's light levels only (always daytime), not Halo's lightmaps.
 - The Minecraft side still says "Skyrim" in its logs.

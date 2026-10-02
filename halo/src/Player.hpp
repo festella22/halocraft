@@ -10,4 +10,7 @@ namespace Player {
     // Render thread, every frame: fill Halo's half of SkyState and stream collision.
     // mc is null while Minecraft isn't connected and in its world.
     void frame(skycraft::proto::SkyState& sky, const skycraft::proto::McState* mc);
+
+    // True while Minecraft drives Chief (Halo's damage to Chief then goes to Minecraft instead).
+    bool driving();
 }

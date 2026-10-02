@@ -114,6 +114,8 @@ namespace Player {
             Collision::update(feet.x, feet.y, feet.z);
     }
 
+    bool driving() { return puppet.load(std::memory_order_relaxed); }
+
     void install(Spark::ModId owner) {
         // While Minecraft drives, Halo keeps only the look: no walking, jumping, crouching or shooting.
         Spark::UpdatePlayerControls::addHandler(owner, +[](void*, Spark::UpdatePlayerControls::Cursor next, float* a, float* b) {

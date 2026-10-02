@@ -155,6 +155,8 @@ namespace Input {
             case WM_KILLFOCUS:
                 Link::pushInput(proto::kInReleaseAll, 0);
                 return false;
+            default:
+                break;
             }
             return false;
         }
