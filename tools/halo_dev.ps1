@@ -13,9 +13,14 @@ Copy-Item "$root\bin\$Config-Win64\halocraft\halocraft.dll" $mods -Force
 
 if (-not (Get-Process $proc -ErrorAction SilentlyContinue)) {
     Start-Process "steam://launch/976730/option2"  # option2 = Anti-Cheat Disabled
-    while (-not (Get-Process $proc -ErrorAction SilentlyContinue)) { Start-Sleep 1 }
 }
+# Injecting during MCC's startup crashes Spark. PartyWin.dll loads late; Spark's own import path
+# waits for it too.
+do { Start-Sleep 2; $p = Get-Process $proc -ErrorAction SilentlyContinue }
+until ($p -and ($p.Modules | Where-Object ModuleName -eq 'PartyWin.dll'))
+Start-Sleep 5
 
-& "$root\vendor\spark\bin\$Config-Win64\spark-launcher\spark-launcher.exe"
-Start-Sleep 3
-Get-Content "$mods\halocraft.log" -ErrorAction SilentlyContinue
+if (-not ($p.Modules | Where-Object ModuleName -eq 'spark.dll')) {
+    & "$root\vendor\spark\bin\$Config-Win64\spark-launcher\spark-launcher.exe"
+}
+"Spark injected. Mods load once a Halo CE level is running; log: $mods\halocraft.log"
