@@ -53,6 +53,8 @@ namespace WorldRender {
         ID3D11DepthStencilState* depthTest = nullptr;
         ID3D11BlendState* opaque = nullptr;
         ID3D11BlendState* alphaBlend = nullptr;
+        ID3D11BlendState* crumble = nullptr;        // Minecraft's crack blend: 2 * src * dst
+        ID3D11RasterizerState* biased = nullptr;    // cracks: pulled towards the camera so they never z-fight
         bool initFailed = false;
 
         // Halo's scene depth (R32G8X24_TYPELESS) and our depth view of it: blocks are tested and
@@ -64,7 +66,7 @@ namespace WorldRender {
 
         // Per-frame things (dropped items, arrows, cracks, the outline), rebuilt every frame.
         proto::WorldEntities entities{};
-        std::vector<proto::RenVertex> dynTris, dynLines;
+        std::vector<proto::RenVertex> dynTris, dynCracks, dynLines;
         ID3D11Buffer* dynVb = nullptr;
         UINT dynCapacity = 0;
 
@@ -188,9 +190,15 @@ float4 PSMain(VSOut i) : SV_Target {
             rt.DestBlendAlpha = D3D11_BLEND_ONE;
             rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
             device->CreateBlendState(&bd, &alphaBlend);
+            rt.SrcBlend = D3D11_BLEND_DEST_COLOR;
+            rt.DestBlend = D3D11_BLEND_SRC_COLOR;
+            device->CreateBlendState(&bd, &crumble);
+            rd.SlopeScaledDepthBias = 1.0f;  // reversed depth: positive is nearer
+            rd.DepthBias = 16;
+            device->CreateRasterizerState(&rd, &biased);
 
             const bool ok = vs && ps && layout && frameCb && sectionCb && viewProjCb && sampler && raster && depthWrite && depthTest && opaque &&
-                            alphaBlend;
+                            alphaBlend && crumble && biased;
             log(ok ? "block renderer ready" : "block renderer failed to initialize");
             initFailed = !ok;
             return ok;
@@ -258,9 +266,9 @@ float4 PSMain(VSOut i) : SV_Target {
                 sections.emplace(k, s);
         }
 
-        // dynTris then dynLines into one dynamic vertex buffer.
+        // dynTris, dynCracks, dynLines into one dynamic vertex buffer, in that order.
         bool uploadDynamic(ID3D11Device* device, ID3D11DeviceContext* context) {
-            const UINT bytes = UINT((dynTris.size() + dynLines.size()) * sizeof(proto::RenVertex));
+            const UINT bytes = UINT((dynTris.size() + dynCracks.size() + dynLines.size()) * sizeof(proto::RenVertex));
             if (!bytes)
                 return false;
             if (bytes > dynCapacity) {
@@ -280,8 +288,10 @@ float4 PSMain(VSOut i) : SV_Target {
             if (FAILED(context->Map(dynVb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
                 return false;
             auto* dst = static_cast<std::uint8_t*>(m.pData);
-            std::memcpy(dst, dynTris.data(), dynTris.size() * sizeof(proto::RenVertex));
-            std::memcpy(dst + dynTris.size() * sizeof(proto::RenVertex), dynLines.data(), dynLines.size() * sizeof(proto::RenVertex));
+            for (const auto* v : { &dynTris, &dynCracks, &dynLines }) {
+                std::memcpy(dst, v->data(), v->size() * sizeof(proto::RenVertex));
+                dst += v->size() * sizeof(proto::RenVertex);
+            }
             context->Unmap(dynVb, 0);
             return true;
         }
@@ -378,9 +388,10 @@ float4 PSMain(VSOut i) : SV_Target {
         // Entities relative to a whole block near the player, so floats stay exact.
         const double origin[3] = { std::floor(anchor[0]), std::floor(anchor[1]), std::floor(anchor[2]) };
         dynTris.clear();
+        dynCracks.clear();
         dynLines.clear();
         if (Link::readWorldEntities(entities))
-            WorldEntities::build(entities, origin, dynTris, dynLines);
+            WorldEntities::build(entities, origin, dynTris, dynCracks, dynLines);
         const bool haveDynamic = uploadDynamic(device, context);
         if (sections.empty() && !haveDynamic)
             return;
@@ -422,9 +433,17 @@ float4 PSMain(VSOut i) : SV_Target {
                     context->Draw(UINT(dynTris.size()), 0);
                 if (!dynLines.empty()) {
                     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
-                    context->Draw(UINT(dynLines.size()), UINT(dynTris.size()));
+                    context->Draw(UINT(dynLines.size()), UINT(dynTris.size() + dynCracks.size()));
                 }
             }
+        }
+        // Cracks last, over everything they sit on (translucent pass constants still bound).
+        if (haveDynamic && !dynCracks.empty()) {
+            context->OMSetBlendState(crumble, factor, 0xFFFFFFFF);
+            context->OMSetDepthStencilState(depthTest, 0);
+            context->RSSetState(biased);
+            context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            context->Draw(UINT(dynCracks.size()), UINT(dynTris.size()));
         }
     }
 
@@ -433,7 +452,7 @@ float4 PSMain(VSOut i) : SV_Target {
         rel(haloDsv), rel(haloDepth), rel(dynVb);
         dynCapacity = 0;
         rel(atlasSrv), rel(atlas), rel(vs), rel(ps), rel(layout), rel(frameCb), rel(sectionCb), rel(viewProjCb);
-        rel(sampler), rel(raster), rel(depthWrite), rel(depthTest), rel(opaque), rel(alphaBlend);
+        rel(sampler), rel(raster), rel(depthWrite), rel(depthTest), rel(opaque), rel(alphaBlend), rel(crumble), rel(biased);
         atlasW = atlasH = haloDepthW = haloDepthH = 0;
         sceneSeen = false;
         initFailed = false;

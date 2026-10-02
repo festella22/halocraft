@@ -101,7 +101,8 @@ namespace WorldEntities {
         }
     }
 
-    void build(const proto::WorldEntities& in, const double o[3], std::vector<proto::RenVertex>& tris, std::vector<proto::RenVertex>& outline) {
+    void build(const proto::WorldEntities& in, const double o[3], std::vector<proto::RenVertex>& tris, std::vector<proto::RenVertex>& cracks,
+        std::vector<proto::RenVertex>& outline) {
         out = &tris;
         for (std::uint32_t i = 0; i < in.count; ++i) {
             const auto& e = in.entities[i];
@@ -114,9 +115,11 @@ namespace WorldEntities {
                 box(mn, sz, e.yaw * kPi / 180.0f, e.uv[0], e.uv[1], e.uv[2], e.tint, kCutout, true);
                 break;
             }
-            case proto::kWeCrack: {
+            case proto::kWeCrack: {  // unlit, cut out: the blend multiplies the block under it
                 const float mn[3] = { px, py, pz };
-                box(mn, e.ext, 0.0f, e.uv[0], e.uv[0], e.uv[0], 0, kTranslucent, false);
+                out = &cracks;
+                box(mn, e.ext, 0.0f, e.uv[0], e.uv[0], e.uv[0], 0, kCutout | kTranslucent, false);
+                out = &tris;
                 break;
             }
             case proto::kWeArrow:
