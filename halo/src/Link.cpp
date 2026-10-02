@@ -129,6 +129,49 @@ namespace Link {
         return false;
     }
 
+    // Byte ring of 8-byte aligned {type, bytes} messages; kColPad means "wrap to the start".
+    bool writeCollision(proto::ColType type, const void* payload, std::uint32_t bytes) {
+        if (!base)
+            return false;
+        auto* ring = base + proto::kOffCollisionRing;
+        auto& headRef = *reinterpret_cast<std::uint64_t*>(ring + proto::kColRingHeadOff);
+        auto& tailRef = *reinterpret_cast<std::uint64_t*>(ring + proto::kColRingTailOff);
+        auto* data = ring + proto::kColRingDataOff;
+        constexpr auto size = proto::kColRingDataBytes;
+        const std::uint64_t msgBytes = (sizeof(proto::ColMsgHeader) + bytes + 7) & ~7ull;
+        if (msgBytes > size / 2)
+            return false;
+        auto head = atomic(headRef).load(std::memory_order_relaxed);
+        const auto tail = atomic(tailRef).load(std::memory_order_acquire);
+        auto pos = head % size;
+        const auto padBytes = (pos + msgBytes > size) ? size - pos : 0;
+        if (size - (head - tail) < msgBytes + padBytes)
+            return false;
+        if (padBytes) {
+            *reinterpret_cast<proto::ColMsgHeader*>(data + pos) = { proto::kColPad, 0 };
+            head += padBytes;
+            pos = 0;
+        }
+        *reinterpret_cast<proto::ColMsgHeader*>(data + pos) = { type, bytes };
+        std::memcpy(data + pos + sizeof(proto::ColMsgHeader), payload, bytes);
+        atomic(headRef).store(head + msgBytes, std::memory_order_release);
+        return true;
+    }
+
+    void pushInput(proto::InputType type, std::uint16_t code, std::int32_t a, std::int32_t b, std::int32_t c) {
+        if (!base)
+            return;
+        auto* ring = base + proto::kOffInputRing;
+        auto& headRef = *reinterpret_cast<std::uint64_t*>(ring + proto::kInputRingHeadOff);
+        auto& tailRef = *reinterpret_cast<std::uint64_t*>(ring + proto::kInputRingTailOff);
+        const auto head = atomic(headRef).load(std::memory_order_relaxed);
+        if (head - atomic(tailRef).load(std::memory_order_acquire) >= proto::kInputRingEntries)
+            return;  // Minecraft isn't draining; drop rather than block the game's window thread
+        auto* entry = reinterpret_cast<proto::InputEvent*>(ring + proto::kInputRingDataOff) + (head & (proto::kInputRingEntries - 1));
+        *entry = { std::uint16_t(type), code, a, b, c };
+        atomic(headRef).store(head + 1, std::memory_order_release);
+    }
+
     // state bits 0-1: middle slot, bit 2: middle holds an unread frame. Swap our front for it.
     bool acquireOverlayFrame() {
         if (!base)

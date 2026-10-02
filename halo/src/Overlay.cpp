@@ -8,8 +8,10 @@
 #include <d3dcompiler.h>
 #include <cstring>
 #include <string>
+#include "Input.hpp"
 #include "Link.hpp"
 #include "Log.hpp"
+#include "Player.hpp"
 #include "engine/halo1.hpp"
 #include "spark/mod/ImGuiBridge.hpp"
 
@@ -274,11 +276,14 @@ float4 PSMain(VSOut i) : SV_Target {
             D3D11_MAPPED_SUBRESOURCE mapped{};
             if (SUCCEEDED(context->Map(params, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
                 auto* p = static_cast<Params*>(mapped.pData);
+                // The cursor lives in overlay pixels; scale if the overlay and back buffer differ.
                 const float sx = texW ? float(bb.Width) / float(texW) : 1.0f;
-                p->cursor[0] = p->cursor[1] = 0;  // ponytail: no Minecraft cursor until input is forwarded (Phase 1b)
+                const float sy = texH ? float(bb.Height) / float(texH) : 1.0f;
+                p->cursor[0] = float(Input::cursorX.load()) * sx;
+                p->cursor[1] = float(Input::cursorY.load()) * sy;
                 p->viewport[0] = float(bb.Width);
                 p->viewport[1] = float(bb.Height);
-                p->cursorOn = 0;
+                p->cursorOn = screenOpen ? 1.0f : 0.0f;
                 p->flipY = flipY ? 1.0f : 0.0f;
                 // The crosshair (15 GUI px) and attack indicator below it, around the screen centre.
                 const float g = float(mc.guiScale) * sx;
@@ -348,22 +353,28 @@ float4 PSMain(VSOut i) : SV_Target {
             Spark::Mod::syncImGuiContext();
             const bool paused = ImGui::GetIO().WantCaptureMouse;
 
+            Input::haloPaused = paused;
+            proto::McState mc{};
+            const bool live = Link::mcAlive() && Link::readMcState(mc) && (mc.flags & proto::kMcInWorld);
+            Input::mcScreenOpen = live && (mc.flags & proto::kMcScreenOpen);
+
             DXGI_SWAP_CHAIN_DESC desc{};
             swapChain->GetDesc(&desc);
             proto::SkyState sky{};
             sky.flags = Engine::isGameLoaded() ? proto::kSkyInGame : 0;
             if (paused)
                 sky.flags |= proto::kSkyMenuOpen;
-            // ponytail: Phase 1 parks Minecraft's player at a fixed spot; Phase 2 maps Halo's player here.
-            sky.posY = 64;
             sky.viewportW = desc.BufferDesc.Width;
             sky.viewportH = desc.BufferDesc.Height;
+            // ponytail: Halo's player is read on the render thread; a torn read is one frame of jitter.
+            Player::frame(sky, live ? &mc : nullptr);
             Link::writeSkyState(sky);
 
-            proto::McState mc{};
-            if (!Link::mcAlive() || !Link::readMcState(mc) || !(mc.flags & proto::kMcInWorld) || !initResources(swapChain))
+            if (!live || !initResources(swapChain))
                 return;
             uploadLatestFrame();
+            Input::overlayW = int(texW);
+            Input::overlayH = int(texH);
             if (haveFrame && !paused)
                 drawOverlay(swapChain, mc);
         }

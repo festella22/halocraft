@@ -4,9 +4,11 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include "Input.hpp"
 #include "Link.hpp"
 #include "Log.hpp"
 #include "Overlay.hpp"
+#include "Player.hpp"
 #include "engine/scripting/Scripting.hpp"
 #include "spark/SparkAPI.h"
 #include "spark/hook/Hooks.hpp"
@@ -33,6 +35,15 @@ namespace {
             log("Minecraft Mode activated. I am Steve.");
             Link::create();
             Overlay::install();
+            Input::install();
+            Player::install(modId_);
+
+            // A Minecraft screen (inventory, crafting, chat) owns the mouse and keys: freeze Halo's
+            // movement and look until it closes.
+            Spark::UpdatePlayerControlsAndLook::addHandler(modId_, +[](void*, Spark::UpdatePlayerControlsAndLook::Cursor next, float dt, uint32_t budget) {
+                if (!Input::mcScreenOpen)
+                    next(dt, budget);
+            }, nullptr);
 
             // While Minecraft is connected, its hand and HUD replace Halo's.
             Spark::RenderFPVModel::addHandler(modId_, +[](void*, Spark::RenderFPVModel::Cursor next) {
@@ -50,7 +61,10 @@ namespace {
         }
 
         // ponytail: Halo's HUD isn't restored here; Spark unloads mods when the level unloads.
-        void free() override { Overlay::uninstall(); }
+        void free() override {
+            Input::uninstall();
+            Overlay::uninstall();
+        }
     };
 }
 
