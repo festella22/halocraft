@@ -1,5 +1,8 @@
 #include "Player.hpp"
+#define NOMINMAX
+#include <Windows.h>
 #include <atomic>
+#include <cstring>
 #include <cmath>
 #include <mutex>
 #include <string>
@@ -7,6 +10,7 @@
 #include "Coords.hpp"
 #include "Log.hpp"
 #include "engine/halo1.hpp"
+#include "engine/map.hpp"
 #include "engine/player.hpp"
 #include "spark/hook/Hooks.hpp"
 
@@ -16,10 +20,15 @@ namespace Player {
 
         // Halo's player position is the biped's origin; Minecraft's is the feet. Calibration knob:
         // the first frame of each level logs how high Halo's origin sits above the ground under it.
+        // Battle Creek measured 0.0 (Minecraft lifted Steve exactly onto the triangle under Chief).
+        // An earlier 0.1 on Pillar of Autumn was Chief standing on an object, which isn't in the BSP.
         constexpr float kFeetOffsetUnits = 0.0f;
 
-        std::uint32_t teleportSeq = 0;
+        // Never equal to a teleport Minecraft already acknowledged before this copy of the mod
+        // loaded, or we'd think it arrived and drag Chief to wherever Steve was left.
+        std::uint32_t teleportSeq = std::uint32_t(GetTickCount64());
         std::uint32_t lastHandle = 0;
+        char lastMap[33] = {};
         bool loggedGround = false;
         float teleportOriginZ = 0.0f;
 
@@ -39,9 +48,19 @@ namespace Player {
             return;
         }
 
-        // A new player object (level start, respawn): put Minecraft's player where Chief is.
+        // A new map gets its own patch of the Minecraft world (Coords::setMap).
+        const char* map = Engine::getMapName();
+        const bool newMap = map && strncmp(map, lastMap, 32) != 0;
+        if (newMap) {
+            strncpy_s(lastMap, map, 32);
+            Coords::setMap(lastMap);
+            log(std::string("map ") + lastMap + ": Minecraft patch at x " + std::to_string(int(Coords::offsetX)) + ", z " +
+                std::to_string(int(Coords::offsetZ)));
+        }
+
+        // A new player object (level start, respawn) or map: put Minecraft's player where Chief is.
         const auto handle = Engine::getPlayerHandle();
-        if (handle != lastHandle) {
+        if (handle != lastHandle || newMap) {
             lastHandle = handle;
             ++teleportSeq;
             loggedGround = false;

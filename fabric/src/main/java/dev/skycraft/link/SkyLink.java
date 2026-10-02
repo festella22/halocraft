@@ -75,6 +75,7 @@ public final class SkyLink {
 	private static volatile MemorySegment shm;
 	private static long lastOpenAttempt;
 	private static int skyrimPid;
+	private static int hostSession;
 	private static volatile int generation;
 
 	private SkyLink() {
@@ -110,12 +111,15 @@ public final class SkyLink {
 		if (shm != null) {
 			LONG.setRelease(shm, OFF_HEADER + H_MC_HEARTBEAT, tickCount());
 			int pid = shm.get(JAVA_INT, OFF_HEADER + H_SKYRIM_PID);
-			if (pid != skyrimPid) {
-				// Skyrim restarted and reset the shared state; start our side over too.
+			int session = shm.get(JAVA_INT, OFF_HEADER + H_HOST_SESSION);
+			if (pid != skyrimPid || session != hostSession) {
+				// Skyrim restarted (or HaloCraft's mod reloaded in the same process) and reset the
+				// shared state; start our side over too.
 				skyrimPid = pid;
+				hostSession = session;
 				overlayBack = 1;
 				generation++;
-				SkyCraft.LOG.info("SkyCraft: Skyrim instance changed (pid {})", pid);
+				SkyCraft.LOG.info("SkyCraft: Skyrim instance changed (pid {}, session {})", pid, session);
 			}
 			return;
 		}
@@ -153,6 +157,7 @@ public final class SkyLink {
 			seg.set(JAVA_INT, OFF_HEADER + H_MC_PID, (int) GET_CURRENT_PROCESS_ID.invokeExact());
 			LONG.setRelease(seg, OFF_HEADER + H_MC_HEARTBEAT, tickCount());
 			skyrimPid = seg.get(JAVA_INT, OFF_HEADER + H_SKYRIM_PID);
+			hostSession = seg.get(JAVA_INT, OFF_HEADER + H_HOST_SESSION);
 			generation++;
 			shm = seg;
 			SkyCraft.LOG.info("SkyCraft: linked to Skyrim (pid {})", seg.get(JAVA_INT, OFF_HEADER + H_SKYRIM_PID));

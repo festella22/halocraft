@@ -129,6 +129,8 @@ public final class Proto {
 	public static final long H_MC_PID = 0x0C;
 	public static final long H_SKYRIM_HEARTBEAT = 0x10;
 	public static final long H_MC_HEARTBEAT = 0x18;
+	// HaloCraft: changes whenever the host's mod reloads inside the same process (see kOffHostSession).
+	public static final long H_HOST_SESSION = 0x20;
 
 	// SkyState (relative to OFF_SKY_STATE)
 	public static final long SS_SEQ = 0x00;

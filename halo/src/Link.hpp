@@ -1,6 +1,7 @@
 // The shared memory Minecraft opens. Ported from SkyCraft's skse/src/Link.cpp (MIT, chasmlol);
 // Halo plays Skyrim's role in protocol/skycraft_protocol.h.
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include "skycraft_protocol.h"
 
@@ -13,6 +14,11 @@ namespace Link {
     void heartbeat();
     void writeSkyState(const proto::SkyState& state);
     bool readMcState(proto::McState& out);
+    // Render ring (Minecraft -> Halo): calls fn(type, payload, bytes) for each message, until
+    // maxBytes have been consumed this call.
+    template <class Fn> void drainRender(Fn&& fn, std::uint64_t maxBytes);
+    std::uint8_t* renderRing();
+
     // Collision ring message; false when the ring is full (try again next frame).
     bool writeCollision(proto::ColType type, const void* payload, std::uint32_t bytes);
     // Single producer: only the window thread (Input.cpp) pushes.
@@ -22,4 +28,30 @@ namespace Link {
     bool acquireOverlayFrame();
     const std::uint8_t* frontPixels();
     const proto::OverlaySlotHdr* frontHeader();
+
+    template <class Fn> void drainRender(Fn&& fn, std::uint64_t maxBytes) {
+        auto* ring = renderRing();
+        if (!ring)
+            return;
+        auto& headRef = *reinterpret_cast<std::uint64_t*>(ring + proto::kRenRingHeadOff);
+        auto& tailRef = *reinterpret_cast<std::uint64_t*>(ring + proto::kRenRingTailOff);
+        const auto head = std::atomic_ref(headRef).load(std::memory_order_acquire);
+        auto tail = std::atomic_ref(tailRef).load(std::memory_order_relaxed);
+        auto* data = ring + proto::kRenRingDataOff;
+        constexpr auto size = proto::kRenRingDataBytes;
+        std::uint64_t done = 0;
+        while (tail < head && done < maxBytes) {
+            const auto pos = tail % size;
+            const auto* hdr = reinterpret_cast<const proto::ColMsgHeader*>(data + pos);
+            if (hdr->type == proto::kRenPad) {
+                tail += size - pos;
+                continue;
+            }
+            fn(hdr->type, data + pos + sizeof(proto::ColMsgHeader), hdr->payloadBytes);
+            const auto msgBytes = (sizeof(proto::ColMsgHeader) + hdr->payloadBytes + 7) & ~7ull;
+            tail += msgBytes;
+            done += msgBytes;
+        }
+        std::atomic_ref(tailRef).store(tail, std::memory_order_release);
+    }
 }

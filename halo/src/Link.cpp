@@ -76,6 +76,8 @@ namespace Link {
         header->version = proto::kVersion;
         header->skyrimPid = GetCurrentProcessId();
         header->skyrimHeartbeatMs = GetTickCount64();
+        // A new value every load, so Minecraft resends what this fresh copy of the mod lost.
+        atomic(*at<std::uint32_t>(proto::kOffHostSession)).store(std::uint32_t(GetTickCount64()) | 1, std::memory_order_release);
         atomic(header->magic).store(proto::kMagic, std::memory_order_release);
 
         log(std::string("shared memory ") + (err == ERROR_ALREADY_EXISTS ? "reused" : "created") + " (" +
@@ -84,6 +86,8 @@ namespace Link {
     }
 
     bool valid() { return base != nullptr; }
+
+    std::uint8_t* renderRing() { return base ? base + proto::kOffRenderRing : nullptr; }
 
     bool mcAlive() {
         if (!base)

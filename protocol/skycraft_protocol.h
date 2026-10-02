@@ -53,6 +53,11 @@ namespace skycraft::proto
 	};
 	static_assert(sizeof(Header) == 0x20);
 
+	// HaloCraft: u32 right after the header. The host writes a new value every time its mod loads
+	// (Halo's mod can reload inside the same process, so the pid alone doesn't change); Minecraft
+	// treats a change like a new host and resends its atlas, meshes and overlay state.
+	inline constexpr std::uint64_t kOffHostSession = 0x20;
+
 	// ---- Skyrim -> MC state @0x100 (seqlock: seq odd while writing) -------------------------
 	enum SkyFlags : std::uint32_t
 	{

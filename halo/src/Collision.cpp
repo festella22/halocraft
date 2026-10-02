@@ -116,16 +116,29 @@ namespace Collision {
                     tris.push_back({ { poly[0].x, poly[0].y, poly[0].z, poly[i].x, poly[i].y, poly[i].z, poly[i + 1].x, poly[i + 1].y, poly[i + 1].z } });
                 }
             }
-            // Bucket by every region the triangle comes within half a block of.
+            // Bucket by every region the triangle comes within half a block of (not its whole
+            // bounding box: a long sloped triangle would land in thousands of empty regions).
+            constexpr float kHalf = kRegionSize * 0.5f + 0.5f;
             for (std::uint32_t i = 0; i < tris.size(); ++i) {
                 const float* v = tris[i].v;
+                float e1[3], e2[3], n[3];
+                sub(v + 3, v, e1);
+                sub(v + 6, v, e2);
+                cross(e1, e2, n);
+                const float len = std::sqrt(dot(n, n));
+                if (len < 1e-9f)
+                    continue;  // degenerate: collides with nothing
+                n[0] /= len, n[1] /= len, n[2] /= len;
                 const int x0 = floorDiv(std::min({ v[0], v[3], v[6] }) - 0.5f), x1 = floorDiv(std::max({ v[0], v[3], v[6] }) + 0.5f);
                 const int y0 = floorDiv(std::min({ v[1], v[4], v[7] }) - 0.5f), y1 = floorDiv(std::max({ v[1], v[4], v[7] }) + 0.5f);
                 const int z0 = floorDiv(std::min({ v[2], v[5], v[8] }) - 0.5f), z1 = floorDiv(std::max({ v[2], v[5], v[8] }) + 0.5f);
                 for (int x = x0; x <= x1; ++x)
                     for (int y = y0; y <= y1; ++y)
-                        for (int z = z0; z <= z1; ++z)
-                            buckets[key(x, y, z)].push_back(i);
+                        for (int z = z0; z <= z1; ++z) {
+                            const float c[3] = { (x + 0.5f) * kRegionSize, (y + 0.5f) * kRegionSize, (z + 0.5f) * kRegionSize };
+                            if (triBoxOverlap(c, kHalf, v, v + 3, v + 6, n))
+                                buckets[key(x, y, z)].push_back(i);
+                        }
             }
             log("collision: " + std::to_string(nSurfaces) + " BSP surfaces -> " + std::to_string(tris.size()) + " triangles in " +
                 std::to_string(buckets.size()) + " regions");

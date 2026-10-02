@@ -8,8 +8,10 @@
 #include <d3dcompiler.h>
 #include <cstring>
 #include <string>
+#include "D3DState.hpp"
 #include "Input.hpp"
 #include "Link.hpp"
+#include "WorldRender.hpp"
 #include "Log.hpp"
 #include "Player.hpp"
 #include "engine/halo1.hpp"
@@ -222,55 +224,7 @@ float4 PSMain(VSOut i) : SV_Target {
             haveFrame = true;
         }
 
-        void drawOverlay(IDXGISwapChain* swapChain, const proto::McState& mc) {
-            ID3D11Texture2D* backBuffer = nullptr;
-            if (FAILED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&backBuffer))))
-                return;
-            ID3D11RenderTargetView* rtv = nullptr;
-            const auto hr = device->CreateRenderTargetView(backBuffer, nullptr, &rtv);
-            D3D11_TEXTURE2D_DESC bb{};
-            backBuffer->GetDesc(&bb);
-            release(backBuffer);
-            if (FAILED(hr)) {
-                static bool logged = false;
-                if (!logged) {
-                    logged = true;
-                    log("overlay: back buffer RTV failed (format " + std::to_string(bb.Format) + ")");
-                }
-                return;
-            }
-
-            // Save the pipeline state we touch.
-            ID3D11RenderTargetView* oldRtv[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
-            ID3D11DepthStencilView* oldDsv = nullptr;
-            ID3D11BlendState* oldBlend = nullptr;
-            float oldFactor[4]{};
-            UINT oldMask = 0;
-            ID3D11RasterizerState* oldRaster = nullptr;
-            ID3D11DepthStencilState* oldDepth = nullptr;
-            UINT oldStencil = 0;
-            D3D11_VIEWPORT oldVps[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]{};
-            UINT oldVpCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
-            D3D11_PRIMITIVE_TOPOLOGY oldTopo{};
-            ID3D11InputLayout* oldLayout = nullptr;
-            ID3D11VertexShader* oldVs = nullptr;
-            ID3D11PixelShader* oldPs = nullptr;
-            ID3D11ShaderResourceView* oldSrv = nullptr;
-            ID3D11SamplerState* oldSampler = nullptr;
-            ID3D11Buffer* oldCb = nullptr;
-            context->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, oldRtv, &oldDsv);
-            context->OMGetBlendState(&oldBlend, oldFactor, &oldMask);
-            context->RSGetState(&oldRaster);
-            context->OMGetDepthStencilState(&oldDepth, &oldStencil);
-            context->RSGetViewports(&oldVpCount, oldVps);
-            context->IAGetPrimitiveTopology(&oldTopo);
-            context->IAGetInputLayout(&oldLayout);
-            context->VSGetShader(&oldVs, nullptr, nullptr);
-            context->PSGetShader(&oldPs, nullptr, nullptr);
-            context->PSGetShaderResources(0, 1, &oldSrv);
-            context->PSGetSamplers(0, 1, &oldSampler);
-            context->PSGetConstantBuffers(0, 1, &oldCb);
-
+        void drawOverlay(ID3D11RenderTargetView* rtv, const D3D11_TEXTURE2D_DESC& bb, const proto::McState& mc) {
             const bool screenOpen = (mc.flags & proto::kMcScreenOpen) != 0;
             bool invert = false;
             D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -317,31 +271,6 @@ float4 PSMain(VSOut i) : SV_Target {
                 context->Draw(3, 0);
             }
 
-            context->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, oldRtv, oldDsv);
-            context->OMSetBlendState(oldBlend, oldFactor, oldMask);
-            context->OMSetDepthStencilState(oldDepth, oldStencil);
-            context->RSSetState(oldRaster);
-            context->RSSetViewports(oldVpCount, oldVps);
-            context->IASetPrimitiveTopology(oldTopo);
-            context->IASetInputLayout(oldLayout);
-            context->VSSetShader(oldVs, nullptr, 0);
-            context->PSSetShader(oldPs, nullptr, 0);
-            context->PSSetShaderResources(0, 1, &oldSrv);
-            context->PSSetSamplers(0, 1, &oldSampler);
-            context->PSSetConstantBuffers(0, 1, &oldCb);
-            for (auto*& r : oldRtv)
-                release(r);
-            release(oldDsv);
-            release(oldBlend);
-            release(oldRaster);
-            release(oldDepth);
-            release(oldLayout);
-            release(oldVs);
-            release(oldPs);
-            release(oldSrv);
-            release(oldSampler);
-            release(oldCb);
-            release(rtv);
         }
 
         // Every Halo frame: tell Minecraft we're alive and what to render at, then draw its frame.
@@ -372,11 +301,36 @@ float4 PSMain(VSOut i) : SV_Target {
 
             if (!live || !initResources(swapChain))
                 return;
+            WorldRender::drain(device, context);  // always: Minecraft stalls when its ring fills up
             uploadLatestFrame();
             Input::overlayW = int(texW);
             Input::overlayH = int(texH);
-            if (haveFrame && !paused)
-                drawOverlay(swapChain, mc);
+            if (paused)
+                return;
+
+            ID3D11Texture2D* backBuffer = nullptr;
+            if (FAILED(swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&backBuffer))))
+                return;
+            ID3D11RenderTargetView* rtv = nullptr;
+            const auto hr = device->CreateRenderTargetView(backBuffer, nullptr, &rtv);
+            D3D11_TEXTURE2D_DESC bb{};
+            backBuffer->GetDesc(&bb);
+            release(backBuffer);
+            if (FAILED(hr)) {
+                static bool logged = false;
+                if (!logged) {
+                    logged = true;
+                    log("overlay: back buffer RTV failed (format " + std::to_string(bb.Format) + ")");
+                }
+                return;
+            }
+            D3DState saved;
+            saved.save(context);
+            WorldRender::draw(device, context, rtv, bb.Width, bb.Height);  // blocks go under the hand and HUD
+            if (haveFrame)
+                drawOverlay(rtv, bb, mc);
+            saved.restore(context);
+            release(rtv);
         }
 
         HRESULT WINAPI presentHook(IDXGISwapChain* swapChain, UINT sync, UINT flags) {
@@ -436,6 +390,7 @@ float4 PSMain(VSOut i) : SV_Target {
         vtable = nullptr;
         // ponytail: a frame already inside frame() may still be running; wait it out instead of locking.
         Sleep(100);
+        WorldRender::release();
         release(srv);
         release(texture);
         release(vs);
