@@ -18,12 +18,13 @@ project "halocraft"
 
     includedirs {
         "src",
+        "../protocol",
         "../vendor/spark/spark/src",
         "../vendor/spark/vendor/minhook/include",
         "../vendor/spark/vendor/imgui",
     }
 
-    links { "spark" }
+    links { "spark", "d3d11", "d3dcompiler", "advapi32" }
 
     filter "configurations:Debug"
         runtime "Debug"

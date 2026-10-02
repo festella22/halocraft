@@ -1,48 +1,56 @@
 // HaloCraft's Halo side: a Spark mod. Spark LoadLibrary-s every DLL in MCC\Binaries\Win64\mods\
-// and calls spark_modLoad.
+// and calls spark_modLoad once a Halo CE level is running.
 #include <Windows.h>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <string>
-#include <type_traits>
+#include "Link.hpp"
+#include "Log.hpp"
+#include "Overlay.hpp"
+#include "engine/scripting/Scripting.hpp"
 #include "spark/SparkAPI.h"
-#include "spark/RenderBuses.hpp"
+#include "spark/hook/Hooks.hpp"
 #include "spark/mod/IMod.hpp"
-#include "spark/mod/ImGuiBridge.hpp"
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
-namespace {
-    using Bus = std::remove_reference_t<decltype(Spark::onRenderPauseMenuTabs)>;
+void log(const std::string& msg) {
+    static std::ofstream file = [] {
+        wchar_t path[MAX_PATH];
+        GetModuleFileNameW(reinterpret_cast<HMODULE>(&__ImageBase), path, MAX_PATH);
+        return std::ofstream(std::filesystem::path(path).replace_extension(".log"));
+    }();
+    std::cout << "[HaloCraft] " << msg << std::endl;
+    file << msg << std::endl;
+}
 
-    // Spark's console, plus halocraft.log next to this DLL (readable while the game runs).
-    void log(const std::string& msg) {
-        static std::ofstream file = [] {
-            wchar_t path[MAX_PATH];
-            GetModuleFileNameW(reinterpret_cast<HMODULE>(&__ImageBase), path, MAX_PATH);
-            return std::ofstream(std::filesystem::path(path).replace_extension(".log"));
-        }();
-        std::cout << "[HaloCraft] " << msg << std::endl;
-        file << msg << std::endl;
-    }
+namespace {
+    bool hudHidden = false;
 
     class HaloCraftMod : public Spark::IMod {
     public:
         void init() override {
             log("Minecraft Mode activated. I am Steve.");
+            Link::create();
+            Overlay::install();
 
-            // ponytail: Phase 0 proof of life only. Phase 1 replaces this with Minecraft's frame.
-            Spark::onRenderPauseMenuTabs.addHandler(modId_, +[](void*, Bus::Cursor next) {
-                Spark::Mod::syncImGuiContext();
-                if (ImGui::BeginTabItem("HaloCraft")) {
-                    ImGui::TextUnformatted("Minecraft Mode activated");
-                    ImGui::TextUnformatted("I am Steve");
-                    ImGui::EndTabItem();
+            // While Minecraft is connected, its hand and HUD replace Halo's.
+            Spark::RenderFPVModel::addHandler(modId_, +[](void*, Spark::RenderFPVModel::Cursor next) {
+                if (!Link::mcAlive())
+                    next();
+            }, nullptr);
+            Spark::UpdateCamera::addHandler(modId_, +[](void*, Spark::UpdateCamera::Cursor next, float dt) {
+                next(dt);
+                if (Link::mcAlive() != hudHidden) {
+                    hudHidden = !hudHidden;
+                    Engine::Scripting::submit(hudHidden ? "(show_hud false)" : "(show_hud true)");
+                    log(hudHidden ? "Minecraft connected: Halo HUD hidden" : "Minecraft gone: Halo HUD back");
                 }
-                next();
             }, nullptr);
         }
+
+        // ponytail: Halo's HUD isn't restored here; Spark unloads mods when the level unloads.
+        void free() override { Overlay::uninstall(); }
     };
 }
 

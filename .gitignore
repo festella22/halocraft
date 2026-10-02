@@ -27,3 +27,4 @@ __pycache__/
 /obj/
 *.sln
 *.vcxproj*
+fabric/run-client.log
