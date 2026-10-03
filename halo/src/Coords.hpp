@@ -1,8 +1,6 @@
 #pragma once
 #include <cmath>
-#include <cstring>
 #include <numbers>
-#include <string_view>
 
 // Halo (Z up, world units) <-> Minecraft (Y up, blocks). Scaled so the players match: Chief's eye
 // is 0.62 units above his feet, Steve's 1.62 blocks (Chief's ~0.7 units then come out at Steve's
@@ -11,34 +9,19 @@
 namespace Coords {
     inline constexpr float kBlocksPerUnit = 1.62f / 0.62f;
 
-    // Every Halo map lives in its own patch of the one Minecraft world, so blocks built on one
-    // map don't show up on another. Patches sit on an 8x8 grid, 8192 blocks apart (Halo maps
-    // span a few thousand blocks); that keeps coordinates under ~33k, where floats still resolve
-    // 1/256 block for the collision and mesh data.
+    // Every Halo level load plays in a fresh, empty patch of the one Minecraft world, so a restarted
+    // mission doesn't find the last run's blocks (dying and respawning keep them). Patches sit on a
+    // 32x32 grid 8192 blocks apart (a Halo map spans a few thousand blocks), which keeps coordinates
+    // under 131k, where floats still resolve 1/64 block for the collision and mesh data.
     inline constexpr double kSlotSpacing = 8192.0;
+    inline constexpr int kGrid = 32;
     inline double offsetX = 0.0, offsetZ = 0.0;
 
-    inline void setMap(const char* name) {
-        static constexpr std::string_view kMaps[] = {
-            "a10", "a30", "a50", "b30", "b40", "c10", "c20", "c40", "d20", "d40",
-            "beavercreek", "bloodgulch", "boardingaction", "carousel", "chillout", "damnation", "dangercanyon",
-            "deathisland", "gephyrophobia", "hangemhigh", "icefields", "infinity", "longest", "prisoner",
-            "putput", "ratrace", "sidewinder", "timberland", "wizard",
-        };
-        const std::string_view n = name ? std::string_view(name, strnlen(name, 32)) : std::string_view();
-        int slot = -1;
-        for (int i = 0; i < int(std::size(kMaps)); ++i)
-            if (n == kMaps[i])
-                slot = i;
-        if (slot < 0) {  // custom maps: hash into the rest of the grid
-            std::uint32_t h = 2166136261u;
-            for (char c : n)
-                h = (h ^ std::uint8_t(c)) * 16777619u;
-            slot = int(std::size(kMaps)) + int(h % (63 - std::size(kMaps)));
-        }
-        ++slot;  // slot 0 (around the origin) is left to whatever was built before patches existed
-        offsetX = (slot % 8 - 4) * kSlotSpacing;
-        offsetZ = (slot / 8 - 4) * kSlotSpacing;
+    // ponytail: wraps after 1023 level loads, when the oldest patch's blocks come back.
+    inline void usePatch(unsigned slot) {
+        slot = 1 + slot % (kGrid * kGrid - 1);  // patch 0 (the origin) holds builds from before patches
+        offsetX = (int(slot % kGrid) - kGrid / 2) * kSlotSpacing;
+        offsetZ = (int(slot / kGrid) - kGrid / 2) * kSlotSpacing;
     }
 
     struct V3 { float x, y, z; };

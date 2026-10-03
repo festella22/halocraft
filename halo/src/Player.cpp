@@ -1,8 +1,11 @@
 #include "Player.hpp"
 #define NOMINMAX
 #include <Windows.h>
+#include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <cmath>
 #include <mutex>
 #include <numbers>
@@ -30,6 +33,47 @@ namespace Player {
         std::uint32_t teleportSeq = std::uint32_t(GetTickCount64());
         std::uint32_t lastHandle = 0;
         char lastMap[33] = {};
+        bool freshStartSent = false;
+
+        // %LOCALAPPDATA%\HaloCraft: patch.txt counts patches ever used; session.txt says which patch the
+        // level that's running right now plays in.
+        std::filesystem::path stateFile(const wchar_t* name) {
+            wchar_t dir[MAX_PATH];
+            if (!GetEnvironmentVariableW(L"LOCALAPPDATA", dir, MAX_PATH))
+                return {};
+            const std::filesystem::path folder = std::filesystem::path(dir) / L"HaloCraft";
+            std::error_code ec;
+            std::filesystem::create_directories(folder, ec);
+            return folder / name;
+        }
+
+        unsigned currentPatch = 0;
+
+        // The same MCC, map and Chief as when the session was written: this copy of the mod was
+        // hot-reloaded into a level that kept running (a restarted mission has a new Chief).
+        void saveSession() {
+            std::ofstream(stateFile(L"session.txt")) << GetCurrentProcessId() << ' ' << lastMap << ' ' << lastHandle << ' ' << currentPatch;
+        }
+
+        bool sameSession(std::uint32_t handle) {
+            DWORD pid = 0;
+            std::string map;
+            std::uint32_t savedHandle = 0;
+            unsigned patch = 0;
+            std::ifstream in(stateFile(L"session.txt"));
+            if (!(in >> pid >> map >> savedHandle >> patch) || pid != GetCurrentProcessId() || map != lastMap || savedHandle != handle)
+                return false;
+            currentPatch = patch;
+            return true;
+        }
+
+        unsigned nextPatch() {
+            unsigned n = 0;
+            if (std::ifstream in(stateFile(L"patch.txt")); in)
+                in >> n;
+            std::ofstream(stateFile(L"patch.txt")) << n + 1;
+            return n;
+        }
         bool loggedGround = false;
         float teleportOriginZ = 0.0f;
 
@@ -39,6 +83,7 @@ namespace Player {
         Coords::V3 mcFeetHalo{};  // Minecraft's feet, in Halo coordinates
         Coords::V3 mcEyeHalo{};   // Minecraft's camera (eye, or F5's third person), Halo's camera goes there
         bool lookingBack = false; // F5's second mode: the camera faces Steve
+        std::atomic<float> zoomNow{ 1.0f };  // render thread -> game thread
     }
 
     void frame(proto::SkyState& sky, const proto::McState* mc) {
@@ -51,20 +96,25 @@ namespace Player {
             return;
         }
 
-        // A new map gets its own patch of the Minecraft world (Coords::setMap).
+        // Every level load: a fresh, empty patch of the Minecraft world, and Steve starts over. A hot
+        // reload of this mod into a level that kept running carries on where it was instead.
         const char* map = Engine::getMapName();
+        const auto handle = Engine::getPlayerHandle();
         const bool newMap = map && strncmp(map, lastMap, 32) != 0;
         if (newMap) {
             strncpy_s(lastMap, map, 32);
-            Coords::setMap(lastMap);
-            log(std::string("map ") + lastMap + ": Minecraft patch at x " + std::to_string(int(Coords::offsetX)) + ", z " +
-                std::to_string(int(Coords::offsetZ)));
+            const bool reloaded = sameSession(handle);
+            if (!reloaded)
+                currentPatch = nextPatch();
+            freshStartSent = reloaded;
+            Coords::usePatch(currentPatch);
+            log(std::string("map ") + lastMap + ": Minecraft patch " + std::to_string(currentPatch) + (reloaded ? " (hot reload: kept)" : " (fresh)"));
         }
 
         // A new player object (level start, respawn) or map: put Minecraft's player where Chief is.
-        const auto handle = Engine::getPlayerHandle();
         if (handle != lastHandle || newMap) {
             lastHandle = handle;
+            saveSession();
             ++teleportSeq;
             loggedGround = false;
             teleportOriginZ = pos->z;
@@ -96,7 +146,17 @@ namespace Player {
             const double look[3] = { -std::sin(yaw) * std::cos(pitch), -std::sin(pitch), std::cos(yaw) * std::cos(pitch) };
             mcEyeHalo = Coords::toHalo(mc->eyeX + look[0] * back, mc->eyeY + look[1] * back, mc->eyeZ + look[2] * back);
             lookingBack = mc->cameraMode == 2;
+            // Only in first person: the scope is Steve's eye.
+            zoomNow = mc->cameraMode == 0 ? 1.0f + (kMaxZoom - 1.0f) * std::clamp(mc->bowDraw, 0.0f, 1.0f) : 1.0f;
         }
+        if (mc && !freshStartSent) {
+            freshStartSent = true;
+            Link::pushInput(proto::kInFreshStart, 0);
+            log("Minecraft: fresh start (kits, health, food)");
+        }
+
+        if (!drive)
+            zoomNow = 1.0f;
         if (drive != puppet.exchange(drive))
             log(drive ? "Minecraft is driving Chief" : "Halo is driving Chief");
 
@@ -119,17 +179,25 @@ namespace Player {
 
     bool driving() { return puppet.load(std::memory_order_relaxed); }
 
+    float zoom() { return zoomNow.load(std::memory_order_relaxed); }
+
     void install(Spark::ModId owner) {
-        // While Minecraft drives, Halo keeps only the look: no walking, jumping, crouching or shooting.
+        // While Minecraft drives, Halo keeps only the look: no walking, jumping, crouching, shooting,
+        // melee or grenades. Halo has already read the input into the controller by now and this call
+        // hands it to Chief, so blank it for the call and put it back after (clearing it after the
+        // call let Chief's invisible gun keep firing).
         Spark::UpdatePlayerControls::addHandler(owner, +[](void*, Spark::UpdatePlayerControls::Cursor next, float* a, float* b) {
-            next(a, b);
-            if (!puppet)
+            auto* pc = puppet ? Engine::getPlayerControllerPointer() : nullptr;
+            if (!pc) {
+                next(a, b);
                 return;
-            if (auto* pc = Engine::getPlayerControllerPointer()) {
-                pc->walkX = pc->walkY = 0.0f;
-                pc->actions = 0;
-                pc->gunTrigger = 0.0f;
             }
+            const Engine::PlayerController saved = *pc;
+            pc->walkX = pc->walkY = 0.0f;
+            pc->actions = 0;
+            pc->gunTrigger = 0.0f;
+            next(a, b);
+            *pc = saved;
         }, nullptr);
 
         // Halo's camera sits at Minecraft's eye, so Halo's crosshair is exactly Minecraft's aim.
@@ -142,7 +210,28 @@ namespace Player {
                 cam->pos = { mcEyeHalo.x, mcEyeHalo.y, mcEyeHalo.z };
                 if (lookingBack)  // ponytail: up is left alone, fine while the pitch is small
                     cam->fwd = { -cam->fwd.x, -cam->fwd.y, -cam->fwd.z };
+                if (const float z = zoomNow; z > 1.001f)  // the bow's scope
+                    cam->fov = 2.0f * std::atan(std::tan(cam->fov * 0.5f) / z);
             }
+        }, nullptr);
+
+        // Zoomed in, the mouse turns slower by the same factor, like Halo's own scopes.
+        Spark::UpdatePlayerControlsAndLook::addHandler(owner, +[](void*, Spark::UpdatePlayerControlsAndLook::Cursor next, float dt, uint32_t budget) {
+            auto* pc = puppet ? Engine::getPlayerControllerPointer() : nullptr;
+            const float z = zoomNow;
+            if (!pc || z <= 1.001f) {
+                next(dt, budget);
+                return;
+            }
+            const float yaw = pc->yaw, pitch = pc->pitch;
+            next(dt, budget);
+            float dYaw = pc->yaw - yaw;
+            if (dYaw > std::numbers::pi_v<float>)
+                dYaw -= 2.0f * std::numbers::pi_v<float>;
+            else if (dYaw < -std::numbers::pi_v<float>)
+                dYaw += 2.0f * std::numbers::pi_v<float>;
+            pc->yaw = yaw + dYaw / z;
+            pc->pitch = pitch + (pc->pitch - pitch) / z;
         }, nullptr);
 
         // After Halo moves everything, put Chief where Minecraft's player is.

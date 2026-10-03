@@ -376,6 +376,13 @@ public final class SkyClient {
 			boolean bob = minecraft.options.bobView().get() && entityState.isPlayer;
 			mc.bobPhase = bob ? entityState.backwardsInterpolatedWalkDistance : 0.0F;
 			mc.bobAmount = bob ? entityState.bob : 0.0F;
+			// HaloCraft: how far the bow is drawn (Minecraft's own power curve); Halo zooms like a scope.
+			float drawn = 0.0F;
+			if (player.isUsingItem() && player.getUseItem().getItem() instanceof net.minecraft.world.item.BowItem) {
+				float t = (player.getTicksUsingItem() + partial) / 20.0F;
+				drawn = Math.min((t * t + t * 2.0F) / 3.0F, 1.0F);
+			}
+			mc.bowDraw = drawn;
 		}
 		if (minecraft.gui.screen() != null) {
 			flags |= Proto.MC_SCREEN_OPEN;

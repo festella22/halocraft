@@ -7,7 +7,9 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <format>
 #include <string>
+#include <vector>
 #include "Link.hpp"
 #include "Log.hpp"
 
@@ -167,6 +169,42 @@ namespace Input {
             return CallWindowProcW(original, hwnd, msg, wp, lp);
         }
 
+        // Raw mouse input is the only place mouse movement deltas come from (Minecraft's cursor in
+        // screens). MCC doesn't send it to its window, so register it ourselves; legacy mouse
+        // messages keep flowing, so Halo's own mouse handling doesn't change. If MCC already has
+        // raw mouse input going to another window, don't steal it: watch that window instead.
+        bool registeredRaw = false;
+        HWND rawWindow = nullptr;
+        WNDPROC rawOriginal = nullptr;
+
+        LRESULT CALLBACK rawPeekProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+            if (msg == WM_INPUT && Link::mcAlive() && !haloPaused.load(std::memory_order_relaxed))
+                rawInput(reinterpret_cast<HRAWINPUT>(lp));  // look only: that window still gets it
+            return CallWindowProcW(rawOriginal, hwnd, msg, wp, lp);
+        }
+
+        void setupRawMouse() {
+            UINT n = 0;
+            GetRegisteredRawInputDevices(nullptr, &n, sizeof(RAWINPUTDEVICE));
+            std::vector<RAWINPUTDEVICE> devices(n);
+            if (n && GetRegisteredRawInputDevices(devices.data(), &n, sizeof(RAWINPUTDEVICE)) == UINT(-1))
+                n = 0;
+            for (UINT i = 0; i < n; ++i) {
+                const auto& d = devices[i];
+                if (d.usUsagePage != 1 || d.usUsage != 2)
+                    continue;
+                log(std::format("input: MCC already has raw mouse (flags 0x{:x}, {} window)", d.dwFlags, d.hwndTarget == window ? "main" : "another"));
+                if (d.hwndTarget && d.hwndTarget != window) {
+                    rawWindow = d.hwndTarget;
+                    rawOriginal = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(rawWindow, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&rawPeekProc)));
+                }
+                return;
+            }
+            const RAWINPUTDEVICE mouse{ 1, 2, 0, window };  // generic desktop, mouse
+            registeredRaw = RegisterRawInputDevices(&mouse, 1, sizeof(mouse));
+            log(registeredRaw ? "input: registered raw mouse" : "input: raw mouse registration failed");
+        }
+
         BOOL CALLBACK findMainWindow(HWND hwnd, LPARAM out) {
             DWORD pid = 0;
             GetWindowThreadProcessId(hwnd, &pid);
@@ -187,12 +225,22 @@ namespace Input {
         }
         original = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&wndProc)));
         log("input: hooked MCC's window");
+        setupRawMouse();
         return true;
     }
 
     void uninstall() {
         if (!window)
             return;
+        if (registeredRaw) {
+            const RAWINPUTDEVICE remove{ 1, 2, RIDEV_REMOVE, nullptr };
+            RegisterRawInputDevices(&remove, 1, sizeof(remove));
+            registeredRaw = false;
+        }
+        if (rawWindow) {
+            SetWindowLongPtrW(rawWindow, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(rawOriginal));
+            rawWindow = nullptr;
+        }
         // ponytail: assumes nothing subclassed the window after us (Spark hooks before mods load).
         SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(original));
         Link::pushInput(proto::kInReleaseAll, 0);

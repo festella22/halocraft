@@ -1,12 +1,13 @@
 // Halo's level collision -> Minecraft. Halo gives us the whole level's collision BSP up front as
 // polygons, so unlike SkyCraft (which harvests Havok shapes near the player) this triangulates the
-// level once, buckets triangles by region, and streams regions outward from the player.
+// level once, indexes triangles by 64-block column, and streams regions outward from the player.
 // Triangle voxelization (SAT, steep-surface coarsening) and the message layout are ported from
 // SkyCraft's skse/src/Collision.cpp (MIT, chasmlol).
 #include "Collision.hpp"
 #define NOMINMAX
 #include <Windows.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -36,7 +37,13 @@ namespace Collision {
         std::uint64_t bspSignature = 0;
         std::uint32_t epoch = 0;
         std::vector<Tri> tris;
-        std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> buckets;  // region -> triangles near it
+        // Triangles by 64-block (x, z) column, all heights; a region picks its own out when it's sent.
+        // (Bucketing every triangle into every 8-block region up front took 1.4 million regions on
+        // The Silent Cartographer.)
+        constexpr int kColumn = 64;
+        std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> columns;
+        std::vector<std::array<float, 3>> normals;  // per triangle, unit length (zero: degenerate)
+        int columnOf(float v) { return int(std::floor(v / kColumn)); }
         std::unordered_set<std::uint64_t> sent;
 
         std::uint64_t key(int x, int y, int z) {
@@ -87,7 +94,8 @@ namespace Collision {
         // Every collision surface is a convex polygon walked through the edge table; fan it out.
         void loadBsp() {
             tris.clear();
-            buckets.clear();
+            columns.clear();
+            normals.clear();
             sent.clear();
             const auto* verts = Engine::getBSPVertexArray();
             const auto* edges = Engine::getBSPEdgeArray();
@@ -116,9 +124,7 @@ namespace Collision {
                     tris.push_back({ { poly[0].x, poly[0].y, poly[0].z, poly[i].x, poly[i].y, poly[i].z, poly[i + 1].x, poly[i + 1].y, poly[i + 1].z } });
                 }
             }
-            // Bucket by every region the triangle comes within half a block of (not its whole
-            // bounding box: a long sloped triangle would land in thousands of empty regions).
-            constexpr float kHalf = kRegionSize * 0.5f + 0.5f;
+            normals.resize(tris.size());
             for (std::uint32_t i = 0; i < tris.size(); ++i) {
                 const float* v = tris[i].v;
                 float e1[3], e2[3], n[3];
@@ -128,20 +134,34 @@ namespace Collision {
                 const float len = std::sqrt(dot(n, n));
                 if (len < 1e-9f)
                     continue;  // degenerate: collides with nothing
-                n[0] /= len, n[1] /= len, n[2] /= len;
-                const int x0 = floorDiv(std::min({ v[0], v[3], v[6] }) - 0.5f), x1 = floorDiv(std::max({ v[0], v[3], v[6] }) + 0.5f);
-                const int y0 = floorDiv(std::min({ v[1], v[4], v[7] }) - 0.5f), y1 = floorDiv(std::max({ v[1], v[4], v[7] }) + 0.5f);
-                const int z0 = floorDiv(std::min({ v[2], v[5], v[8] }) - 0.5f), z1 = floorDiv(std::max({ v[2], v[5], v[8] }) + 0.5f);
+                normals[i] = { n[0] / len, n[1] / len, n[2] / len };
+                const int x0 = columnOf(std::min({ v[0], v[3], v[6] }) - 0.5f), x1 = columnOf(std::max({ v[0], v[3], v[6] }) + 0.5f);
+                const int z0 = columnOf(std::min({ v[2], v[5], v[8] }) - 0.5f), z1 = columnOf(std::max({ v[2], v[5], v[8] }) + 0.5f);
                 for (int x = x0; x <= x1; ++x)
-                    for (int y = y0; y <= y1; ++y)
-                        for (int z = z0; z <= z1; ++z) {
-                            const float c[3] = { (x + 0.5f) * kRegionSize, (y + 0.5f) * kRegionSize, (z + 0.5f) * kRegionSize };
-                            if (triBoxOverlap(c, kHalf, v, v + 3, v + 6, n))
-                                buckets[key(x, y, z)].push_back(i);
-                        }
+                    for (int z = z0; z <= z1; ++z)
+                        columns[key(x, 0, z)].push_back(i);
             }
             log("collision: " + std::to_string(nSurfaces) + " BSP surfaces -> " + std::to_string(tris.size()) + " triangles in " +
-                std::to_string(buckets.size()) + " regions");
+                std::to_string(columns.size()) + " columns");
+        }
+
+        // The triangles within half a block of a region.
+        std::vector<std::uint32_t> trianglesNear(int rx, int ry, int rz) {
+            std::vector<std::uint32_t> mine;
+            const auto it = columns.find(key(columnOf(float(rx * kRegionSize)), 0, columnOf(float(rz * kRegionSize))));
+            if (it == columns.end())
+                return mine;
+            constexpr float kHalf = kRegionSize * 0.5f + 0.5f;
+            const float c[3] = { (rx + 0.5f) * kRegionSize, (ry + 0.5f) * kRegionSize, (rz + 0.5f) * kRegionSize };
+            for (auto i : it->second) {
+                const float* v = tris[i].v;
+                const auto& n = normals[i];
+                if (n[0] == 0.0f && n[1] == 0.0f && n[2] == 0.0f)
+                    continue;
+                if (triBoxOverlap(c, kHalf, v, v + 3, v + 6, n.data()))
+                    mine.push_back(i);
+            }
+            return mine;
         }
 
         bool send(proto::ColType type, const proto::ColRegion& header, const void* items, std::size_t itemBytes) {
@@ -163,9 +183,7 @@ namespace Collision {
             header.maxZ = header.minZ + kRegionSize - 1;
             header.epoch = epoch;
 
-            static const std::vector<std::uint32_t> kNone;
-            const auto it = buckets.find(key(rx, ry, rz));
-            const auto& mine = it != buckets.end() ? it->second : kNone;
+            const auto mine = trianglesNear(rx, ry, rz);
 
             // Exact triangles first (the smooth collider), then the voxel grid (which marks it known).
             std::vector<proto::ColTri> out;

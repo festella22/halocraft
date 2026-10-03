@@ -13,4 +13,8 @@ namespace Player {
 
     // True while Minecraft drives Chief (Halo's damage to Chief then goes to Minecraft instead).
     bool driving();
+
+    // Drawing the bow zooms like Halo's sniper scope: 1 (none) up to kMaxZoom at full draw.
+    inline constexpr float kMaxZoom = 4.0f;
+    float zoom();
 }

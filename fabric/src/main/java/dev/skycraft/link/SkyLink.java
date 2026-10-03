@@ -318,6 +318,7 @@ public final class SkyLink {
 		public float fov;
 		public float bobPhase;
 		public float bobAmount;
+		public float bowDraw;
 		public double eyeX, eyeY, eyeZ;
 		public long tickQpc;
 		public double prevX, prevY, prevZ;
@@ -353,6 +354,7 @@ public final class SkyLink {
 		s.set(JAVA_FLOAT, b + MS_FOV, st.fov);
 		s.set(JAVA_FLOAT, b + MS_BOB_PHASE, st.bobPhase);
 		s.set(JAVA_FLOAT, b + MS_BOB_AMOUNT, st.bobAmount);
+		s.set(JAVA_FLOAT, b + MS_BOW_DRAW, st.bowDraw);
 		s.set(JAVA_DOUBLE, b + MS_EYE_X, st.eyeX);
 		s.set(JAVA_DOUBLE, b + MS_EYE_Y, st.eyeY);
 		s.set(JAVA_DOUBLE, b + MS_EYE_Z, st.eyeZ);

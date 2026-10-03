@@ -121,7 +121,7 @@ namespace skycraft::proto
 		float         fovDeg;         // effective vertical FOV (includes sprint / fluid modifiers)
 		float         bobPhase;       // MC walk-bob phase (interpolated walk distance); 0 if bobbing is off
 		float         bobAmount;      // MC walk-bob amplitude
-		std::uint32_t pad4C;
+		float         bowDraw;        // HaloCraft: bow draw 0..1 (Halo zooms like its sniper scope)
 		double        eyeX, eyeY, eyeZ;  // MC camera position (interpolated, includes sneak eye lerp)
 
 		// Raw 20 Hz physics ticks, so Skyrim can interpolate on its own frame clock exactly like
@@ -185,6 +185,7 @@ namespace skycraft::proto
 		kInReleaseAll = 6,   // release every held key/button (input focus left MC)
 		kInHurt = 7,         // Skyrim hit the player: code = HurtKind, a = Skyrim damage * 100, b = attacker FormID, c = HurtFlags
 		kInOpenMenu = 8,     // open Minecraft's pause/options menu
+		kInFreshStart = 9,   // HaloCraft: a Halo level just loaded: reset the player (kits, health, food, XP)
 	};
 
 	enum HurtKind : std::uint16_t

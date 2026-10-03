@@ -25,6 +25,15 @@ public final class SkyCraft implements ModInitializer {
 		dev.skycraft.net.SkyNet.init();
 		dev.skycraft.world.SkyDig.init();
 		ServerLifecycleEvents.SERVER_STARTED.register(SkyCraft::configureServer);
+		// HaloCraft: the player's arrows fly dead straight, exactly where the crosshair points (no
+		// gravity, no random spread), like Halo's sniper rifle.
+		net.fabricmc.fabric.api.event.lifecycle.v1.ServerEntityEvents.ENTITY_LOAD.register((entity, level) -> {
+			if (entity instanceof net.minecraft.world.entity.projectile.arrow.AbstractArrow arrow
+				&& arrow.getOwner() instanceof net.minecraft.world.entity.player.Player shooter && !arrow.isNoGravity()) {
+				arrow.setNoGravity(true);
+				arrow.setDeltaMovement(shooter.getLookAngle().scale(arrow.getDeltaMovement().length()));
+			}
+		});
 		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
 			giveStarterKit(handler.getPlayer());
 			giveBuilderKit(handler.getPlayer());
@@ -70,6 +79,28 @@ public final class SkyCraft implements ModInitializer {
 			player.setItemSlot(slots[i], new ItemStack(pieces[i][random.nextBoolean() ? 1 : 0]));
 		}
 		LOG.info("SkyCraft: dressed test guest {} in iron and diamond", player.getName().getString());
+	}
+
+	/**
+	 * HaloCraft: every Halo level load starts the player over (Halo also gives a fresh building
+	 * area): empty inventory and armour, both kits again, full health and food, no XP or effects.
+	 */
+	public static void freshStart(ServerPlayer player) {
+		player.getInventory().clearContent();
+		for (EquipmentSlot slot : new EquipmentSlot[] { EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET, EquipmentSlot.OFFHAND }) {
+			player.setItemSlot(slot, ItemStack.EMPTY);
+		}
+		player.removeTag(KIT2_TAG);
+		giveStarterKit(player);
+		giveBuilderKit(player);
+		player.setHealth(player.getMaxHealth());
+		player.getFoodData().setFoodLevel(20);
+		player.getFoodData().setSaturation(5.0F);
+		player.setExperienceLevels(0);
+		player.setExperiencePoints(0);
+		player.removeAllEffects();
+		player.getInventory().setSelectedSlot(0);  // the sword
+		LOG.info("SkyCraft: fresh start for {}", player.getName().getString());
 	}
 
 	private static void giveStarterKit(ServerPlayer player) {

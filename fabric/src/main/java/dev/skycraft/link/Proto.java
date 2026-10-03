@@ -40,6 +40,7 @@ public final class Proto {
 	// Input types added in v5
 	public static final int IN_HURT = 7;
 	public static final int IN_OPEN_MENU = 8;
+	public static final int IN_FRESH_START = 9; // HaloCraft: a Halo level loaded, start the player over
 	public static final int HURT_MELEE = 0;
 	public static final int HURT_PROJECTILE = 1;
 	public static final int HURT_MAGIC = 2;
@@ -167,6 +168,7 @@ public final class Proto {
 	public static final long MS_FOV = 0x40;
 	public static final long MS_BOB_PHASE = 0x44;
 	public static final long MS_BOB_AMOUNT = 0x48;
+	public static final long MS_BOW_DRAW = 0x4C; // HaloCraft: bow draw 0..1 (Halo zooms like its sniper scope)
 	public static final long MS_EYE_X = 0x50;
 	public static final long MS_EYE_Y = 0x58;
 	public static final long MS_EYE_Z = 0x60;

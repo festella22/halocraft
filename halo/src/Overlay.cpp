@@ -6,6 +6,7 @@
 #include <Windows.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include "D3DState.hpp"
@@ -50,12 +51,13 @@ namespace Overlay {
             float viewport[2];
             float cursorOn;
             float flipY;
-            float pad[2];
+            float scope;  // bow zoom 0..1: darken outside a sniper-scope circle
+            float pad;
             float invertRect[4];  // back buffer pixels: x0, y0, x1, y1 (empty: none)
         };
 
         constexpr char kShader[] = R"(
-cbuffer Params : register(b0) { float2 cursor; float2 viewport; float cursorOn; float flipY; float2 pad; float4 invertRect; };
+cbuffer Params : register(b0) { float2 cursor; float2 viewport; float cursorOn; float flipY; float scope; float pad; float4 invertRect; };
 Texture2D overlay : register(t0);
 SamplerState samp : register(s0);
 struct VSOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
@@ -79,6 +81,11 @@ float4 PSInvert(VSOut i) : SV_Target {
 float4 PSMain(VSOut i) : SV_Target {
 	if (InInvertRect(i.pos.xy)) return 0;
 	float4 c = Overlay(i.uv);
+	// The bow's scope: black outside a circle, under Minecraft's HUD (premultiplied: add coverage).
+	if (scope > 0) {
+		float d = length(i.pos.xy - viewport * 0.5) / (viewport.y * 0.47);
+		c.a += (1 - c.a) * scope * smoothstep(0.97, 1.0, d);
+	}
 	if (cursorOn > 0.5) {
 		float2 p = i.pos.xy - cursor;
 		if (p.x >= 0 && p.y >= 0 && p.y < 18 && p.x <= p.y * 0.6) {
@@ -239,6 +246,7 @@ float4 PSMain(VSOut i) : SV_Target {
                 p->viewport[1] = float(bb.Height);
                 p->cursorOn = screenOpen ? 1.0f : 0.0f;
                 p->flipY = flipY ? 1.0f : 0.0f;
+                p->scope = screenOpen ? 0.0f : std::clamp((Player::zoom() - 1.0f) / (Player::kMaxZoom - 1.0f) * 3.0f, 0.0f, 1.0f);
                 // The crosshair (15 GUI px) and attack indicator below it, around the screen centre.
                 const float g = float(mc.guiScale) * sx;
                 const float cx = float(bb.Width) * 0.5f, cy = float(bb.Height) * 0.5f;

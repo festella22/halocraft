@@ -63,6 +63,18 @@ public final class InputBridge {
 			}
 			case Proto.IN_RELEASE_ALL -> releaseAll();
 			case Proto.IN_HURT -> hurt(minecraft, code, a / 100.0F, b, c);
+			case Proto.IN_FRESH_START -> {
+				var server = minecraft.getSingleplayerServer();
+				if (server != null && minecraft.player != null) {
+					var uuid = minecraft.player.getUUID();
+					server.execute(() -> {
+						ServerPlayer player = server.getPlayerList().getPlayer(uuid);
+						if (player != null) {
+							dev.skycraft.SkyCraft.freshStart(player);
+						}
+					});
+				}
+			}
 			case Proto.IN_OPEN_MENU -> {
 				if (minecraft.gui.screen() == null && minecraft.player != null) {
 					releaseAll();
