@@ -1,18 +1,15 @@
 # Third-party notices
 
-SkyCraft is MIT-licensed (see `LICENSE`). A release also contains, or is built from, the following.
+HaloCraft is MIT-licensed (see `LICENSE`), as is SkyCraft, which it's built from. The HaloCraft
+folder also contains, or is built from, the following.
 
-## In the Skyrim plugin (`SkyCraft.dll`)
+## Spark (`spark.dll`)
 
-| Component | License | Source |
-|---|---|---|
-| CommonLibSSE-NG | MIT | https://github.com/alandtse/CommonLibVR/tree/ng |
-| spdlog | MIT | https://github.com/gabime/spdlog |
-| {fmt} | MIT | https://github.com/fmtlib/fmt |
-| xbyak | BSD-3-Clause | https://github.com/herumi/xbyak |
-| SimpleIni | MIT | https://github.com/brofield/simpleini |
+[Spark](https://github.com/KodyJKing/spark) by KodyJKing, the Halo CE MCC mod loader that loads
+`halocraft.dll`. Its repository has no license file, so ask its author before publishing a build
+that includes it.
 
-## In the bundled Minecraft (`SkyCraft-Minecraft.zip`)
+## In the bundled Minecraft (`HaloCraft-Minecraft.zip`)
 
 | Component | License | Source |
 |---|---|---|
@@ -26,6 +23,6 @@ The bundle carries Prism Launcher's full license text as `Prism/LICENSE-PrismLau
 
 Minecraft, Java and Fabric Loader aren't included. Prism Launcher downloads them from Mojang,
 the Java vendor and FabricMC after the player signs in with a Microsoft account that owns
-Minecraft: Java Edition. Skyrim, SKSE and the Address Library aren't included either.
+Minecraft: Java Edition. Halo: The Master Chief Collection isn't included either.
 
-SkyCraft isn't affiliated with or endorsed by Mojang, Microsoft, Bethesda or ZeniMax.
+HaloCraft isn't affiliated with or endorsed by Mojang, Microsoft, 343 Industries, Halo Studios or Bungie.

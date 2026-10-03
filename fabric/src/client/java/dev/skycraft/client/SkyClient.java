@@ -152,7 +152,8 @@ public final class SkyClient {
 	private static long nextSkyrimCheck;
 	// Started hidden by Skyrim but never connected: nobody can see or use this Minecraft, and it
 	// would stop the next Skyrim from starting a fresh one ("already running"). It goes after this.
-	private static final long NEVER_CONNECTED_QUIT_MS = 10 * 60 * 1000;
+	// (Halo connects only once a level runs, after MCC's menus: half an hour.)
+	private static final long NEVER_CONNECTED_QUIT_MS = 30 * 60 * 1000;
 	private static final long STARTED_AT = System.currentTimeMillis();
 	private static boolean gaveUpWaiting;
 

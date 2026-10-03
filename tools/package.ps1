@@ -1,14 +1,14 @@
-# Builds both halves of SkyCraft and packs a release into dist\:
-#   SkyCraft-<version>.zip             the Skyrim mod (install with MO2 or Vortex): the SKSE plugin, its
-#                                      ini, and SkyCraft-Minecraft.zip, the Minecraft it starts
-#   SkyCraft-<version>-pdb.zip         the plugin's debug symbols, for reading crash logs
-#   skycraft-fabric-<version>.jar      the Minecraft mod on its own (for your own launcher)
+# Builds HaloCraft and packs it into dist\:
+#   HaloCraft\                 ready to run: double-click HaloCraft.exe
+#     HaloCraft.exe             the launcher (Minecraft, MCC without anti-cheat, Spark)
+#     spark.dll, halocraft.dll  Spark (the Halo CE MCC mod loader) and the HaloCraft mod it loads
+#     HaloCraft-Minecraft.zip   a portable Prism Launcher with a ready "HaloCraft" instance (Minecraft
+#                               26.3, Fabric, Fabric API, the mod). HaloCraft.exe unpacks it to
+#                               %LOCALAPPDATA%\HaloCraft; Prism asks for a Microsoft account that owns
+#                               Minecraft: Java Edition once, then downloads Minecraft and Java itself.
+#   HaloCraft-<version>.zip     the same folder, zipped
 #
-# SkyCraft-Minecraft.zip holds a portable Prism Launcher with a ready "SkyCraft" instance (Minecraft
-# 26.3, Fabric, Fabric API, SkyCraft). The plugin unpacks it to %LOCALAPPDATA%\SkyCraft and starts it;
-# Prism asks the player to sign in once, then downloads Minecraft and Java itself.
-#
-#   powershell -ExecutionPolicy Bypass -File tools\package.ps1 [-NoBuild]
+#   powershell -ExecutionPolicy Bypass -File tools\package.ps1 [-NoBuild]    (JAVA_HOME: JDK 25)
 param([switch]$NoBuild)
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -60,11 +60,14 @@ function New-ZipFromFolder([string]$path, [string]$folder) {
 }
 
 if (-not $NoBuild) {
-    Push-Location "$root\skse"
+    $premake = (Get-Command premake5 -ErrorAction SilentlyContinue).Source
+    if (-not $premake) { $premake = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Premake.*\premake5.exe" | Select-Object -First 1 -ExpandProperty FullName }
+    Push-Location $root
     try {
-        cmake --preset default | Out-Null
-        cmake --build --preset release
-        if ($LASTEXITCODE) { throw "the SKSE plugin didn't build" }
+        & $premake vs2022 | Out-Null
+        $env:Path = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin;" + $env:Path
+        MSBuild.exe halocraft.sln /t:spark /t:halocraft /t:launcher /p:Configuration=Release /p:Platform=Win64 /m /v:minimal /nologo
+        if ($LASTEXITCODE) { throw "the Halo side didn't build" }
     } finally { Pop-Location }
     Push-Location "$root\fabric"
     try {
@@ -73,10 +76,11 @@ if (-not $NoBuild) {
     } finally { Pop-Location }
 }
 
-$dll = "$root\skse\build\RelWithDebInfo\SkyCraft.dll"
-$pdb = "$root\skse\build\RelWithDebInfo\SkyCraft.pdb"
+$exe = "$root\bin\Release-Win64\launcher\HaloCraft.exe"
+$mod = "$root\bin\Release-Win64\halocraft\halocraft.dll"
+$spark = "$root\vendor\spark\bin\Release-Win64\spark\spark.dll"
 $jar = "$root\fabric\build\libs\skycraft-$version.jar"
-foreach ($f in @($dll, $pdb, $jar)) {
+foreach ($f in @($exe, $mod, $spark, $jar)) {
     if (-not (Test-Path $f)) { throw "missing $f (build first, or drop -NoBuild)" }
 }
 $cache = "$root\.tools\prism"
@@ -88,31 +92,27 @@ Get-Pinned $prismLicenseUrl "$cache\PrismLauncher-$prismVersion-LICENSE.txt" "" 
 $dist = "$root\dist"
 New-Item -ItemType Directory $dist -Force | Out-Null
 Get-ChildItem $dist | Remove-Item -Recurse -Force
+$out = "$dist\HaloCraft"
+New-Item -ItemType Directory $out | Out-Null
 
-# The bundled Minecraft: Prism (portable), the SkyCraft instance, its mods, Prism's default settings.
+# The bundled Minecraft: Prism (portable), the HaloCraft instance, its mods, Prism's default settings.
 $bundle = "$dist\bundle"
 Copy-Item -Recurse "$root\tools\minecraft-bundle" $bundle
 Expand-Archive "$cache\$prismZip" "$bundle\Prism" -Force
 Copy-Item "$cache\PrismLauncher-$prismVersion-LICENSE.txt" "$bundle\Prism\LICENSE-PrismLauncher.txt"
 (Get-Content "$bundle\Prism\THIRD-PARTY.txt" -Raw).Replace("{PRISM_VERSION}", $prismVersion) | Set-Content "$bundle\Prism\THIRD-PARTY.txt" -NoNewline
-$mods = "$bundle\Prism\instances\SkyCraft\.minecraft\mods"
+$mods = "$bundle\Prism\instances\HaloCraft\.minecraft\mods"
 New-Item -ItemType Directory $mods -Force | Out-Null
 Copy-Item "$cache\$fabricApiJar" $mods
 Copy-Item "$cache\$e4mcJar" $mods
 Copy-Item $jar "$mods\skycraft-$version.jar"
-Set-Content "$bundle\bundle-version.txt" "SkyCraft $version, Prism Launcher $prismVersion, $fabricApiJar, $e4mcJar" -NoNewline
-New-ZipFromFolder "$dist\SkyCraft-Minecraft.zip" $bundle
+Set-Content "$bundle\bundle-version.txt" "HaloCraft $version, Prism Launcher $prismVersion, $fabricApiJar, $e4mcJar" -NoNewline
+New-ZipFromFolder "$out\HaloCraft-Minecraft.zip" $bundle
 Remove-Item -Recurse -Force $bundle
 
-New-Zip "$dist\SkyCraft-$version.zip" ([ordered]@{
-    "SKSE/Plugins/SkyCraft.dll" = $dll
-    "SKSE/Plugins/SkyCraft.ini" = "$root\skse\SkyCraft.ini"
-    "SKSE/Plugins/SkyCraft/SkyCraft-Minecraft.zip" = "$dist\SkyCraft-Minecraft.zip"
-    "SKSE/Plugins/SkyCraft/LICENSE.txt" = "$root\LICENSE"
-    "SKSE/Plugins/SkyCraft/THIRD-PARTY-NOTICES.md" = "$root\THIRD-PARTY-NOTICES.md"
-})
-New-Zip "$dist\SkyCraft-$version-pdb.zip" ([ordered]@{ "SkyCraft.pdb" = $pdb })
-Copy-Item $jar "$dist\skycraft-fabric-$version.jar"
-Remove-Item "$dist\SkyCraft-Minecraft.zip"
+Copy-Item $exe, $mod, $spark $out
+Copy-Item "$root\LICENSE" "$out\LICENSE.txt"
+Copy-Item "$root\THIRD-PARTY-NOTICES.md" $out
+New-ZipFromFolder "$dist\HaloCraft-$version.zip" $out
 
-Get-ChildItem $dist | ForEach-Object { "{0,-40} {1,12:N0} bytes" -f $_.Name, $_.Length }
+Get-ChildItem $out, "$dist\HaloCraft-$version.zip" | ForEach-Object { "{0,-40} {1,12:N0} bytes" -f $_.Name, $_.Length }

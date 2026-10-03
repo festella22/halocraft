@@ -47,6 +47,23 @@ walls by Halo's own camera and depth buffer.
 - Block lighting follows Minecraft's light levels only (always daytime), not Halo's lightmaps.
 - The Minecraft side still says "Skyrim" in its logs.
 
+## Playing it
+
+You need Halo: The Master Chief Collection on Steam with Halo: CE installed, and a Microsoft
+account that owns Minecraft: Java Edition. **Offline only, with anti-cheat disabled. Never use
+mods online.**
+
+1. Build the HaloCraft folder: `tools\package.ps1` (with `JAVA_HOME` set to JDK 25), which puts
+   it in `dist\HaloCraft` (and zips it as `dist\HaloCraft-<version>.zip`).
+2. Double-click `HaloCraft.exe`. It starts the Minecraft that plays inside Halo (hidden), MCC
+   without anti-cheat through Steam, and loads the mod into MCC once it's up.
+   The first time, Prism Launcher asks you to sign in to Minecraft and then downloads Minecraft
+   and Java (a few minutes).
+3. Load any Halo CE level (campaign or a local custom game).
+
+Minecraft quits by itself when MCC closes. If something didn't start, run `HaloCraft.exe` again:
+it starts only what's missing.
+
 ## Running it (development)
 
 You need Halo: The Master Chief Collection on Steam with Halo: CE installed, Minecraft: Java
