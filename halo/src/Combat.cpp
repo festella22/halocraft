@@ -111,7 +111,8 @@ namespace Combat {
                 d.sourceType = kSourceMelee;
                 d.flags = kSingle | (lethal ? kInstantKill : 0) | (crit ? kHead : 0);  // a crit lands like a headshot
                 d.interactorHandle = 0xFFFFFFFF;
-                d.attackerHandle = Engine::getPlayerHandle();
+                // A mob's hit is nobody's: Marines don't turn on Chief for a zombie's bite.
+                d.attackerHandle = (ev.flags & proto::kHitNotPlayer) ? 0xFFFFFFFFu : Engine::getPlayerHandle();
                 d.sourceTypeIndex = 0xFFFF;
                 d.hitPosition = { e->pos.x, e->pos.y, e->pos.z + 0.4f };
                 d.hitDirection = { dir[0], dir[1], 0.0f };

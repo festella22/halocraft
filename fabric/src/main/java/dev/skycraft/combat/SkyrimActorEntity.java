@@ -38,6 +38,7 @@ public class SkyrimActorEntity extends LivingEntity {
 	private double pushX, pushZ;
 	private float pushStrength;
 	private boolean hitThisTick;
+	private boolean hostile; // server side: Covenant or Flood, not a Marine (golems leave those alone)
 
 	public SkyrimActorEntity(EntityType<? extends SkyrimActorEntity> type, Level level) {
 		super(type, level);
@@ -53,6 +54,14 @@ public class SkyrimActorEntity extends LivingEntity {
 
 	public void setFormId(int formId) {
 		this.entityData.set(FORM_ID, formId);
+	}
+
+	public boolean hostile() {
+		return this.hostile;
+	}
+
+	public void setHostile(boolean hostile) {
+		this.hostile = hostile;
 	}
 
 	@Override
@@ -92,6 +101,9 @@ public class SkyrimActorEntity extends LivingEntity {
 			return;
 		}
 		this.pendingDamage += dmg;
+		if (!(source.getEntity() instanceof net.minecraft.world.entity.player.Player)) {
+			this.pendingFlags |= Proto.HIT_NOT_PLAYER; // ponytail: a player's hit in the same tick goes unblamed too
+		}
 		if (source.getDirectEntity() instanceof Projectile) {
 			this.pendingFlags |= Proto.HIT_PROJECTILE;
 		}

@@ -261,6 +261,7 @@ namespace skycraft::proto
 		kHitProjectile = 1u << 1,
 		kHitSweep = 1u << 2,
 		kHitFire = 1u << 3,
+		kHitNotPlayer = 1u << 4,  // not the player's doing (a mob, fire, ...): Halo blames nobody
 	};
 
 	// What landed a kEvHitActor (Skyrim plays that weapon class's impact effect and sounds).

@@ -33,6 +33,9 @@ public final class SkyCraft implements ModInitializer {
 				arrow.setNoGravity(true);
 				arrow.setDeltaMovement(shooter.getLookAngle().scale(arrow.getDeltaMovement().length()));
 			}
+			if (entity instanceof net.minecraft.world.entity.Mob mob) {
+				dev.skycraft.combat.SkyCombat.fightHalo(mob);
+			}
 		});
 		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
 			giveStarterKit(handler.getPlayer());

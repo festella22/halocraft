@@ -95,6 +95,35 @@ public final class SkyCombat {
 		}
 	}
 
+	/**
+	 * Minecraft's mobs fight Halo's characters (their stand-ins): monsters go for anyone, Covenant
+	 * and Marines alike, the way they go for villagers; golems defend against the Covenant. Their
+	 * hits reach Halo like the player's, blamed on nobody. Tamed wolves already join the owner's fights.
+	 */
+	public static void fightHalo(net.minecraft.world.entity.Mob mob) {
+		if (mob instanceof net.minecraft.world.entity.monster.Enemy) {
+			target(mob, proxy -> true);
+		} else if (mob instanceof net.minecraft.world.entity.animal.golem.AbstractGolem) {
+			target(mob, SkyrimActorEntity::hostile);
+		}
+	}
+
+	private static void target(net.minecraft.world.entity.Mob mob, java.util.function.Predicate<SkyrimActorEntity> who) {
+		var selector = ((dev.skycraft.mixin.MobAccessor) mob).skycraft$targetSelector();
+		if (selector.getAvailableGoals().stream().anyMatch(g -> g.getGoal() instanceof HaloTargetGoal)) {
+			return; // loaded again (the entity load event can come more than once)
+		}
+		selector.addGoal(2, new HaloTargetGoal(mob, who)); // same priority as players: whoever it notices first
+	}
+
+	private static final class HaloTargetGoal extends net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal<SkyrimActorEntity> {
+		HaloTargetGoal(net.minecraft.world.entity.Mob mob, java.util.function.Predicate<SkyrimActorEntity> who) {
+			super(mob, SkyrimActorEntity.class, true, (target, level) -> who.test((SkyrimActorEntity) target));
+			// Stand-ins are invisible (Halo draws the real character): that mustn't hide them.
+			this.targetConditions.ignoreInvisibilityTesting();
+		}
+	}
+
 	private static void sync(ServerLevel level) {
 		Map<Integer, SkyLink.Actor> live = new HashMap<>();
 		for (SkyLink.Actor a : ACTORS) {
@@ -116,6 +145,7 @@ public final class SkyCombat {
 			if (proxy == null) {
 				proxy = new SkyrimActorEntity(SKYRIM_ACTOR, level);
 				proxy.setFormId(a.formId());
+				proxy.setHostile(a.hostile());
 				proxy.setSize(a.width(), a.height());
 				proxy.snapTo(a.x(), a.y(), a.z(), a.yaw(), 0.0F);
 				if (!a.name().isEmpty()) {

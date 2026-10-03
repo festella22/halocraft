@@ -13,13 +13,16 @@
     "FlowingFluidMixin",
     "ItemMixin",
     "MinecraftServerFlightMixin",
+    "MobAccessor",
+    "PathfindingContextMixin",
     "PlayerEdgeMixin",
     "PressurePlateMixin",
     "ProjectileMixin",
     "ProjectileUtilMixin",
     "ServerExplosionMixin",
     "ServerPlayerMixin",
-    "SmithingMixin"
+    "SmithingMixin",
+    "WalkNodeEvaluatorMixin"
   ],
   "injectors": { "defaultRequire": 1 }
 }

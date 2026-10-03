@@ -163,6 +163,12 @@ public final class SkyCollision {
 		return fill == null ? 0.0F : (((fill >> FILL_TOP_SHIFT) & 7) + 1) / 8.0F;
 	}
 
+	/** True if Skyrim geometry reaches into this cell's upper half: mobs path around it like a block. */
+	public static boolean blocksPath(int x, int y, int z) {
+		Integer fill = FILL.isEmpty() ? null : FILL.get(BlockPos.asLong(x, y, z));
+		return fill != null && (fill & FILL_UPPER) != 0;
+	}
+
 	/** True if Skyrim ground holds up whatever is in this cell (terrain in its lower half or the top of the cell below). */
 	public static boolean supportsFromBelow(BlockPos pos) {
 		if (FILL.isEmpty()) {

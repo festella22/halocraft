@@ -79,6 +79,7 @@ public final class Proto {
 	public static final int HIT_PROJECTILE = 1 << 1;
 	public static final int HIT_SWEEP = 1 << 2;
 	public static final int HIT_FIRE = 1 << 3;
+	public static final int HIT_NOT_PLAYER = 1 << 4; // a mob, fire, ...: Halo blames nobody
 	public static final int WEAPON_UNARMED = 0;
 	public static final int WEAPON_BLADE = 1;
 	public static final int WEAPON_AXE = 2;
