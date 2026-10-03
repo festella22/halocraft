@@ -253,7 +253,7 @@ public final class SkyDig {
 			case DIG_SPRUCE_LOG -> Blocks.SPRUCE_LOG.defaultBlockState();
 			case DIG_BIRCH_LOG -> Blocks.BIRCH_LOG.defaultBlockState();
 			case DIG_PLANKS -> Blocks.SPRUCE_PLANKS.defaultBlockState();
-			case DIG_METAL -> Blocks.COPPER_BLOCK.waxed().unaffected().defaultBlockState();
+			case DIG_METAL -> Blocks.IRON_BLOCK.defaultBlockState(); // Halo: Forerunner and human metal
 			case DIG_GLASS -> Blocks.GLASS.defaultBlockState();
 			case DIG_ORGANIC -> Blocks.MOSS_BLOCK.defaultBlockState();
 			case DIG_CLOTH -> Blocks.WOOL.pick(DyeColor.BROWN).defaultBlockState();

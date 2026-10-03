@@ -21,7 +21,7 @@ struct D3DState {
     ID3D11VertexShader* vs = nullptr;
     ID3D11PixelShader* ps = nullptr;
     ID3D11Buffer* vsCb[3]{};
-    ID3D11Buffer* psCb[2]{};
+    ID3D11Buffer* psCb[3]{};
     ID3D11ShaderResourceView* srv = nullptr;
     ID3D11SamplerState* sampler = nullptr;
 
@@ -37,7 +37,7 @@ struct D3DState {
         c->VSGetShader(&vs, nullptr, nullptr);
         c->PSGetShader(&ps, nullptr, nullptr);
         c->VSGetConstantBuffers(0, 3, vsCb);
-        c->PSGetConstantBuffers(0, 2, psCb);
+        c->PSGetConstantBuffers(0, 3, psCb);
         c->PSGetShaderResources(0, 1, &srv);
         c->PSGetSamplers(0, 1, &sampler);
     }
@@ -54,7 +54,7 @@ struct D3DState {
         c->VSSetShader(vs, nullptr, 0);
         c->PSSetShader(ps, nullptr, 0);
         c->VSSetConstantBuffers(0, 3, vsCb);
-        c->PSSetConstantBuffers(0, 2, psCb);
+        c->PSSetConstantBuffers(0, 3, psCb);
         c->PSSetShaderResources(0, 1, &srv);
         c->PSSetSamplers(0, 1, &sampler);
         auto rel = [](auto*& p) { if (p) { p->Release(); p = nullptr; } };

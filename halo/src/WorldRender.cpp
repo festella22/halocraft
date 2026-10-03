@@ -1,5 +1,5 @@
-#include "WorldRender.hpp"
 #define NOMINMAX
+#include "WorldRender.hpp"
 #include <Windows.h>
 #include <d3dcompiler.h>
 #include <algorithm>
@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <utility>
 #include "Coords.hpp"
+#include "Dig.hpp"
 #include "Link.hpp"
 #include "Log.hpp"
 #include "WorldEntities.hpp"
@@ -63,6 +64,26 @@ namespace WorldRender {
         ID3D11DepthStencilView* haloDsv = nullptr;
         UINT haloDepthW = 0, haloDepthH = 0;
         bool sceneSeen = false;  // Halo drew its level (and we copied its matrix) since the last Present
+
+        // Dug holes in Halo's ground: each dug block (merged into boxes) is drawn as a box; where the
+        // Halo surface seen through it lies inside the box, that pixel becomes empty (depth reset to
+        // the far plane) so the hole's Minecraft walls and blocks draw there. Halo's depth is read
+        // from a copy (it's also the depth target).
+        struct HoleVertex {
+            float pos[3], lo[3], hi[3];  // Minecraft coordinates relative to holeOrigin
+        };
+        ID3D11VertexShader* holeVs = nullptr;
+        ID3D11PixelShader* holePs = nullptr;
+        ID3D11InputLayout* holeLayout = nullptr;
+        ID3D11DepthStencilState* depthOverwrite = nullptr;
+        ID3D11Texture2D* depthCopy = nullptr;
+        ID3D11ShaderResourceView* depthCopySrv = nullptr;
+        ID3D11Buffer* holeVb = nullptr;
+        UINT holeCapacity = 0;
+        std::vector<HoleVertex> holeVerts;
+        double holeOrigin[3]{};
+        bool holesDirty = true;
+        constexpr int kHoleReach = 64, kHoleReachY = 32;  // blocks around the player whose holes are drawn
 
         // Minecraft's entity renderer output: the player's body in third person (relative to the
         // feet), and everything else (chests, beds, minecarts, TNT, particles) relative to an origin.
@@ -119,6 +140,46 @@ float4 PSMain(VSOut i) : SV_Target {
 }
 )";
 
+        constexpr char kHoleShader[] = R"(
+cbuffer Frame : register(b0) { float4 misc; };
+cbuffer Section : register(b1) { float4 origin; };
+cbuffer Halo : register(b2) { float4 vp0; float4 vp1; float4 vp2; float4 vp3; };
+Texture2D<float> haloDepth : register(t1);
+struct VSIn { float3 pos : POSITION; float3 lo : TEXCOORD0; float3 hi : TEXCOORD1; };
+struct VSOut {
+	float4 pos : SV_Position; float3 world : TEXCOORD0;
+	nointerpolation float3 lo : TEXCOORD1; nointerpolation float3 hi : TEXCOORD2; nointerpolation float3 cam : TEXCOORD3;
+};
+VSOut VSMain(VSIn i) {
+	VSOut o;
+	o.world = origin.xyz + float3(i.pos.x, -i.pos.z, i.pos.y) / misc.x;
+	float4 w = float4(o.world, 1.0);
+	o.pos = float4(dot(vp0, w), dot(vp1, w), dot(vp2, w), dot(vp3, w));
+	o.lo = i.lo;
+	o.hi = i.hi;
+	// The camera: the one point where the matrix's x, y and w rows are all zero.
+	float3 r0 = vp0.xyz, r1 = vp1.xyz, r3 = vp3.xyz;
+	o.cam = -(vp0.w * cross(r1, r3) + vp1.w * cross(r3, r0) + vp3.w * cross(r0, r1)) / dot(r0, cross(r1, r3));
+	return o;
+}
+struct PSOut { float4 color : SV_Target; float depth : SV_Depth; };
+PSOut PSMain(VSOut i) {
+	float raw = haloDepth.Load(int3(i.pos.xy, 0));
+	if (raw <= 0.0) discard;  // sky: nothing there
+	// The Halo surface this pixel shows: on the camera ray through this point, at Halo's depth.
+	float3 d = i.world - i.cam;
+	float s = dot(vp2, float4(i.cam, 1.0)) / (raw * dot(vp3.xyz, d) - dot(vp2.xyz, d));
+	float3 S = i.cam + d * s;
+	float3 mc = float3(S.x - origin.x, S.z - origin.z, origin.y - S.y) * misc.x;  // Halo -> Minecraft, relative
+	const float e = 0.005;
+	if (any(mc < i.lo - e) || any(mc > i.hi + e)) discard;  // that surface isn't dug
+	PSOut o;
+	o.color = float4(0.03, 0.03, 0.03, 1.0);  // only shows if Minecraft has nothing there yet
+	o.depth = 0.0;  // the far plane: whatever Minecraft has in the hole draws over it
+	return o;
+}
+)";
+
         template <class T> void rel(T*& p) {
             if (p) {
                 p->Release();
@@ -136,15 +197,30 @@ float4 PSMain(VSOut i) : SV_Target {
             if (initFailed)
                 return false;
             ID3DBlob *vsBlob = nullptr, *psBlob = nullptr, *errors = nullptr;
-            auto compile = [&](const char* entry, const char* target, ID3DBlob** out) {
-                const auto hr = D3DCompile(kShader, sizeof(kShader) - 1, "halocraft_blocks", nullptr, nullptr, entry, target,
+            auto compile = [&](std::string_view source, const char* entry, const char* target, ID3DBlob** out) {
+                const auto hr = D3DCompile(source.data(), source.size(), "halocraft_blocks", nullptr, nullptr, entry, target,
                     D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, out, &errors);
                 if (FAILED(hr))
                     log(std::string("block shader ") + entry + " failed: " + (errors ? static_cast<const char*>(errors->GetBufferPointer()) : "?"));
                 rel(errors);
                 return SUCCEEDED(hr);
             };
-            if (!compile("VSMain", "vs_5_0", &vsBlob) || !compile("PSMain", "ps_5_0", &psBlob)) {
+            if (!compile(kHoleShader, "VSMain", "vs_5_0", &vsBlob) || !compile(kHoleShader, "PSMain", "ps_5_0", &psBlob)) {
+                rel(vsBlob);
+                initFailed = true;
+                return false;
+            }
+            device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &holeVs);
+            device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &holePs);
+            const D3D11_INPUT_ELEMENT_DESC holeElements[] = {
+                { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+                { "TEXCOORD", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+                { "TEXCOORD", 1, DXGI_FORMAT_R32G32B32_FLOAT, 0, 24, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            };
+            device->CreateInputLayout(holeElements, 3, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &holeLayout);
+            rel(vsBlob);
+            rel(psBlob);
+            if (!compile(kShader, "VSMain", "vs_5_0", &vsBlob) || !compile(kShader, "PSMain", "ps_5_0", &psBlob)) {
                 rel(vsBlob);
                 initFailed = true;
                 return false;
@@ -194,6 +270,9 @@ float4 PSMain(VSOut i) : SV_Target {
             device->CreateDepthStencilState(&dd, &depthWrite);
             dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
             device->CreateDepthStencilState(&dd, &depthTest);
+            dd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+            dd.DepthFunc = D3D11_COMPARISON_ALWAYS;
+            device->CreateDepthStencilState(&dd, &depthOverwrite);
 
             D3D11_BLEND_DESC bd{};
             bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
@@ -215,7 +294,7 @@ float4 PSMain(VSOut i) : SV_Target {
             device->CreateRasterizerState(&rd, &biased);
 
             const bool ok = vs && ps && layout && frameCb && sectionCb && viewProjCb && sampler && raster && depthWrite && depthTest && opaque &&
-                            alphaBlend && crumble && biased;
+                            alphaBlend && crumble && biased && holeVs && holePs && holeLayout && depthOverwrite;
             log(ok ? "block renderer ready" : "block renderer failed to initialize");
             initFailed = !ok;
             return ok;
@@ -417,6 +496,88 @@ float4 PSMain(VSOut i) : SV_Target {
             context->PSSetShaderResources(0, 1, &atlasSrv);
         }
 
+        // The dug boxes around the player, rebuilt when digging changes or the player has moved on.
+        void buildHoles(const double anchor[3]) {
+            const double o[3] = { std::floor(anchor[0]), std::floor(anchor[1]), std::floor(anchor[2]) };
+            if (!holesDirty && std::abs(o[0] - holeOrigin[0]) < 8 && std::abs(o[1] - holeOrigin[1]) < 8 && std::abs(o[2] - holeOrigin[2]) < 8)
+                return;
+            holesDirty = false;
+            std::copy(o, o + 3, holeOrigin);
+            holeVerts.clear();
+            if (!Dig::any())
+                return;
+            const float lo[3] = { float(o[0] - kHoleReach), float(o[1] - kHoleReachY), float(o[2] - kHoleReach) };
+            const float hi[3] = { float(o[0] + kHoleReach), float(o[1] + kHoleReachY), float(o[2] + kHoleReach) };
+            std::vector<skycraft::Clip::Cube> cubes;
+            Dig::collect(lo, hi, cubes);
+            for (auto& c : cubes)  // relative, so the boxes' floats stay exact far from the origin
+                c = { c[0] - int(o[0]), c[1] - int(o[1]), c[2] - int(o[2]) };
+            static constexpr int kQuads[6][4] = { { 0, 2, 6, 4 }, { 1, 3, 7, 5 }, { 0, 1, 5, 4 }, { 2, 3, 7, 6 }, { 0, 1, 3, 2 }, { 4, 5, 7, 6 } };
+            constexpr float kGrow = 0.01f;  // drawn a little bigger than the test in the shader
+            for (const auto& b : skycraft::Clip::Merge(cubes)) {
+                HoleVertex corner[8];
+                for (int i = 0; i < 8; ++i)
+                    for (int k = 0; k < 3; ++k) {
+                        corner[i].pos[k] = ((i >> k) & 1) ? b.hi[k] + kGrow : b.lo[k] - kGrow;
+                        corner[i].lo[k] = b.lo[k];
+                        corner[i].hi[k] = b.hi[k];
+                    }
+                for (const auto& q : kQuads)
+                    for (int i : { q[0], q[1], q[2], q[0], q[2], q[3] })
+                        holeVerts.push_back(corner[i]);
+            }
+        }
+
+        // Halo's depth copied where the hole shader can read it, and the boxes uploaded. Before
+        // Halo's depth is bound as our target.
+        bool prepareHoles(ID3D11Device* device, ID3D11DeviceContext* context, const double anchor[3]) {
+            buildHoles(anchor);
+            if (holeVerts.empty())
+                return false;
+            D3D11_TEXTURE2D_DESC d{};
+            haloDepth->GetDesc(&d);
+            if (d.SampleDesc.Count != 1)
+                return false;  // ponytail: no holes with MSAA (Halo CE in MCC doesn't use it)
+            D3D11_TEXTURE2D_DESC have{};
+            if (depthCopy)
+                depthCopy->GetDesc(&have);
+            if (!depthCopy || have.Width != d.Width || have.Height != d.Height || have.Format != d.Format) {
+                rel(depthCopySrv);
+                rel(depthCopy);
+                d.Usage = D3D11_USAGE_DEFAULT;
+                d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                d.CPUAccessFlags = 0;
+                d.MiscFlags = 0;
+                D3D11_SHADER_RESOURCE_VIEW_DESC sv{};
+                sv.Format = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+                sv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+                sv.Texture2D.MipLevels = 1;
+                if (FAILED(device->CreateTexture2D(&d, nullptr, &depthCopy)) || FAILED(device->CreateShaderResourceView(depthCopy, &sv, &depthCopySrv))) {
+                    log("dug holes: no copy of Halo's depth");
+                    rel(depthCopy);
+                    return false;
+                }
+            }
+            const UINT bytes = UINT(holeVerts.size() * sizeof(HoleVertex));
+            if (bytes > holeCapacity) {
+                rel(holeVb);
+                D3D11_BUFFER_DESC bd{};
+                bd.ByteWidth = std::max<UINT>(bytes * 2, 64 * 1024);
+                bd.Usage = D3D11_USAGE_DYNAMIC;
+                bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+                bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+                holeCapacity = SUCCEEDED(device->CreateBuffer(&bd, nullptr, &holeVb)) ? bd.ByteWidth : 0;
+            }
+            D3D11_MAPPED_SUBRESOURCE m{};
+            if (!holeVb || FAILED(context->Map(holeVb, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
+                return false;
+            std::memcpy(m.pData, holeVerts.data(), bytes);
+            context->Unmap(holeVb, 0);
+            context->OMSetRenderTargets(0, nullptr, nullptr);  // Halo's depth may still be bound
+            context->CopyResource(depthCopy, haloDepth);
+            return true;
+        }
+
         void setPass(ID3D11DeviceContext* context, FrameCB& f, float pass) {
             f.misc[2] = pass;
             D3D11_MAPPED_SUBRESOURCE m{};
@@ -435,11 +596,19 @@ float4 PSMain(VSOut i) : SV_Target {
             case proto::kRenAtlas: onAtlas(device, p, bytes); break;
             case proto::kRenAtlasRegion: onAtlasRegion(context, p, bytes); break;
             case proto::kRenSection: onSection(device, p, bytes); break;
-            case proto::kRenClearAll: dropSections(); break;
+            case proto::kRenClearAll:
+                dropSections();
+                Dig::clear();
+                holesDirty = true;
+                break;
+            case proto::kRenDug:
+                Dig::onDug(p, bytes);
+                holesDirty = true;
+                break;
             case proto::kRenTexture: onTexture(device, p, bytes); break;
             case proto::kRenAvatar: onMesh(avatar, p, bytes, false); break;
             case proto::kRenScene: onMesh(scene, p, bytes, true); break;
-            default: break;  // ponytail: block lights, NPC solids, dug Halo ground, ragdoll: not used yet
+            default: break;  // ponytail: block lights, NPC solids, ragdoll: not used yet
             }
         }, kDrainBytesPerFrame);
     }
@@ -515,21 +684,38 @@ float4 PSMain(VSOut i) : SV_Target {
         fc.misc[0] = Coords::kBlocksPerUnit;
         fc.misc[1] = 1.0f;  // ponytail: always day; Halo's lightmaps could drive this later
 
+        const bool holes = prepareHoles(device, context, anchor);
         context->OMSetRenderTargets(1, &rtv, haloDsv);
         const D3D11_VIEWPORT vp{ 0, 0, float(width), float(height), 0, 1 };
         context->RSSetViewports(1, &vp);
         context->RSSetState(raster);
         context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ID3D11Buffer* cbs[3] = { frameCb, sectionCb, viewProjCb };
+        context->VSSetConstantBuffers(0, 3, cbs);
+        context->PSSetConstantBuffers(0, 3, cbs);
+        context->PSSetSamplers(0, 1, &sampler);
+        const float factor[4]{};
+
+        // Dug holes first: Halo's ground in them is cleared, so the blocks below draw in them.
+        if (holes && setOrigin(context, holeOrigin[0], holeOrigin[1], holeOrigin[2])) {
+            setPass(context, fc, 0.0f);
+            context->IASetInputLayout(holeLayout);
+            context->VSSetShader(holeVs, nullptr, 0);
+            context->PSSetShader(holePs, nullptr, 0);
+            context->PSSetShaderResources(1, 1, &depthCopySrv);
+            context->OMSetBlendState(opaque, factor, 0xFFFFFFFF);
+            context->OMSetDepthStencilState(depthOverwrite, 0);
+            const UINT stride = sizeof(HoleVertex), offset = 0;
+            context->IASetVertexBuffers(0, 1, &holeVb, &stride, &offset);
+            context->Draw(UINT(holeVerts.size()), 0);
+            ID3D11ShaderResourceView* none = nullptr;
+            context->PSSetShaderResources(1, 1, &none);
+        }
+
         context->IASetInputLayout(layout);
         context->VSSetShader(vs, nullptr, 0);
         context->PSSetShader(ps, nullptr, 0);
-        ID3D11Buffer* cbs[3] = { frameCb, sectionCb, viewProjCb };
-        context->VSSetConstantBuffers(0, 3, cbs);
-        context->PSSetConstantBuffers(0, 2, cbs);
         context->PSSetShaderResources(0, 1, &atlasSrv);
-        context->PSSetSamplers(0, 1, &sampler);
-
-        const float factor[4]{};
         for (int pass = 0; pass < 2; ++pass) {
             setPass(context, fc, float(pass));
             context->OMSetBlendState(pass ? alphaBlend : opaque, factor, 0xFFFFFFFF);
@@ -582,6 +768,10 @@ float4 PSMain(VSOut i) : SV_Target {
         entityTextures.clear();
         rel(atlasSrv), rel(atlas), rel(vs), rel(ps), rel(layout), rel(frameCb), rel(sectionCb), rel(viewProjCb);
         rel(sampler), rel(raster), rel(depthWrite), rel(depthTest), rel(opaque), rel(alphaBlend), rel(crumble), rel(biased);
+        rel(holeVs), rel(holePs), rel(holeLayout), rel(depthOverwrite), rel(depthCopySrv), rel(depthCopy), rel(holeVb);
+        holeCapacity = 0;
+        holeVerts.clear();
+        holesDirty = true;
         atlasW = atlasH = haloDepthW = haloDepthH = 0;
         sceneSeen = false;
         initFailed = false;

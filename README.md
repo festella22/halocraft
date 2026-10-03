@@ -28,6 +28,12 @@ walls by Halo's own camera and depth buffer.
   against Halo's scene.
 - **Third person (F5)**: Steve's own animated body, armour and held items, both camera modes.
 - **Every Halo map gets its own patch of the Minecraft world**, so builds stay on their map.
+- **Mining Halo's terrain**: Halo's ground, rock and structures dig out one block at a time (or by
+  the crater with TNT) and drop the matching Minecraft block, from the level's collision materials:
+  dirt is grass, sand is sand, rock is stone, metal (Forerunner and human) is iron, wood is planks,
+  glass, ice, snow, leaves. Under it is dirt, stone with ores, then bedrock. Halo's own ground
+  disappears inside dug blocks (screen-space, against Halo's depth) and Minecraft draws the hole's
+  walls. Water, force fields, shields and the level's invisible walls stay.
 
 - **Combat (untested)**: every Halo character near you is a hittable stand-in in Minecraft (swords,
   crits, knockback, bows); Minecraft's hits take Halo's shield then health (20 Minecraft damage per
