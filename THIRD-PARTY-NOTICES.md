@@ -6,8 +6,8 @@ folder also contains, or is built from, the following.
 ## Spark (`spark.dll`)
 
 [Spark](https://github.com/KodyJKing/spark) by KodyJKing, the Halo CE MCC mod loader that loads
-`halocraft.dll`. Its repository has no license file, so ask its author before publishing a build
-that includes it.
+`halocraft.dll`, built unmodified from its source. Its repository has no license file; it's
+included with credit, and HaloCraft will stop shipping it if its author asks.
 
 ## In the bundled Minecraft (`HaloCraft-Minecraft.zip`)
 

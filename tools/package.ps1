@@ -111,6 +111,7 @@ New-ZipFromFolder "$out\HaloCraft-Minecraft.zip" $bundle
 Remove-Item -Recurse -Force $bundle
 
 Copy-Item $exe, $mod, $spark $out
+Copy-Item "$root\tools\player-readme.txt" "$out\README.txt"
 Copy-Item "$root\LICENSE" "$out\LICENSE.txt"
 Copy-Item "$root\THIRD-PARTY-NOTICES.md" $out
 New-ZipFromFolder "$dist\HaloCraft-$version.zip" $out
