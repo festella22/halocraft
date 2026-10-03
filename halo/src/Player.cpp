@@ -21,9 +21,9 @@ namespace Player {
 
         // Halo's player position is the biped's origin; Minecraft's is the feet. Calibration knob:
         // the first frame of each level logs how high Halo's origin sits above the ground under it.
-        // Battle Creek measured 0.0 (Minecraft lifted Steve exactly onto the triangle under Chief).
-        // An earlier 0.1 on Pillar of Autumn was Chief standing on an object, which isn't in the BSP.
-        constexpr float kFeetOffsetUnits = 0.0f;
+        // How far Halo's biped origin sits above its feet. It depends on the biped: 0.0 for the
+        // multiplayer cyborg, ~0.09 for the campaign one. Measured on every level (see below).
+        float feetOffset = 0.0f;
 
         // Never equal to a teleport Minecraft already acknowledged before this copy of the mod
         // loaded, or we'd think it arrived and drag Chief to wherever Steve was left.
@@ -71,7 +71,7 @@ namespace Player {
             log("teleporting Minecraft to Chief (seq " + std::to_string(teleportSeq) + ")");
         }
 
-        const auto feet = Coords::toMc(pos->x, pos->y, pos->z - kFeetOffsetUnits);
+        const auto feet = Coords::toMc(pos->x, pos->y, pos->z - feetOffset);
         sky.posX = feet.x;
         sky.posY = feet.y;
         sky.posZ = feet.z;
@@ -84,7 +84,7 @@ namespace Player {
         if (drive) {
             std::lock_guard lock(feetLock);
             mcFeetHalo = Coords::toHalo(mc->x, mc->y, mc->z);
-            mcFeetHalo.z += kFeetOffsetUnits;
+            mcFeetHalo.z += feetOffset;
             // F5: Minecraft's camera sits cameraDistance behind the eye (mode 1) or in front of it
             // looking back (mode 2); WorldRender draws Steve's body there.
             double back = 0.0;
@@ -103,9 +103,12 @@ namespace Player {
         // Chief was standing when we teleported; once Steve lands, the height difference is the offset.
         if (drive && !loggedGround && (mc->flags & proto::kMcOnGround)) {
             loggedGround = true;
-            const float feetZ = float(mc->y / Coords::kBlocksPerUnit);
-            log("calibration: Halo origin was " + std::to_string(teleportOriginZ - feetZ) + " units above Minecraft's feet (offset now " +
-                std::to_string(kFeetOffsetUnits) + ")");
+            const float measured = teleportOriginZ - float(mc->y / Coords::kBlocksPerUnit);
+            // More than 0.15 means Chief wasn't standing on the level's own ground (mid-air, on a crate).
+            if (measured >= 0.0f && measured < 0.15f)
+                feetOffset = measured;
+            log("calibration: Halo origin was " + std::to_string(measured) + " units above Minecraft's feet (offset now " +
+                std::to_string(feetOffset) + ")");
         }
 
         if (mc)

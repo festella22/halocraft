@@ -23,20 +23,25 @@ namespace Combat {
 
         constexpr float kRangeBlocks = 64.0f;  // stand-ins exist this far around the player
         // Halo keeps shield and health as fractions of each character's maximum. Each bar counts as
-        // this much Minecraft damage: a Grunt (health only) falls to three diamond-sword hits, an
-        // Elite (shield + health) to six.
-        constexpr float kMcHpPerBar = 20.0f;
-        // Chief's whole vitality (shield + health = 2.0) is Steve's 20 health.
-        constexpr float kMcHpPerChiefVitality = 10.0f;
+        // this much Minecraft damage: a Grunt (health only) falls to two sword hits, an Elite
+        // (shield + health) to three or four. (20 felt spongy in the first campaign test.)
+        constexpr float kMcHpPerBar = 12.0f;
+        // A full shield bar of Halo damage is more than Steve's 20 health: Chief's shield breaking
+        // is deadly, like it should feel. (10 let Minecraft's regeneration outheal Easy Covenant.)
+        constexpr float kMcHpPerChiefVitality = 25.0f;
         constexpr float kSkyrimToMcDamage = 5.0f;  // SkyCombat.SKYRIM_TO_MC_DAMAGE divides what we send
-        constexpr std::uint32_t kInstantKill = 0x1 | 0x4;  // DamageEvent flags: single target, instant kill
+        // DamageEvent flags (Spark's notes): single target, instant kill, head.
+        constexpr std::uint32_t kSingle = 0x1, kInstantKill = 0x4, kHead = 0x20;
+        constexpr std::uint32_t kSourceMelee = 4;
+        // Minecraft knockback (blocks per Minecraft tick, 20/s) -> Halo velocity (units per Halo tick, 30/s).
+        constexpr float kKnockbackScale = (20.0f / 30.0f) / Coords::kBlocksPerUnit;
 
         std::vector<proto::ActorRecord> actors;
 
-        // Any damage effect works for a kill; the first one this map has.
-        Engine::Tag* killTag() {
-            static constexpr const char* kPaths[] = { "weapons\\assault rifle\\melee", "weapons\\pistol\\melee", "weapons\\frag grenade\\explosion",
-                "weapons\\plasma grenade\\explosion" };
+        // A melee damage effect (any weapon's), so Halo reacts to a punch, not a bullet or grenade.
+        Engine::Tag* meleeTag() {
+            static constexpr const char* kPaths[] = { "weapons\\assault rifle\\melee", "weapons\\pistol\\melee", "weapons\\shotgun\\melee",
+                "weapons\\plasma rifle\\melee", "weapons\\needler\\melee", "weapons\\sniper rifle\\melee", "weapons\\rocket launcher\\melee" };
             for (const char* path : kPaths)
                 if (auto* tag = Engine::findTag(path, "jpt!"))
                     return tag;
@@ -46,7 +51,7 @@ namespace Combat {
         // Halo's own damage path (death animation, ragdoll, checkpoint/respawn), bypassing every
         // DamageEntity handler including ours.
         void kill(std::uint32_t handle, Engine::Entity* entity, std::uint32_t attacker) {
-            auto* tag = killTag();
+            auto* tag = meleeTag();
             if (!tag || !Spark::DamageEntity::original) {
                 entity->shield = 0.0f;
                 entity->health = 0.0f;  // ponytail: no damage tag on this map; it dies on its next hit
@@ -65,21 +70,65 @@ namespace Combat {
             Spark::DamageEntity::original(&ev, handle, 0, 0, -1, 0);
         }
 
-        // Minecraft hit a stand-in for `damage` (after its own armour, crit and enchantment maths).
-        void onHit(std::uint32_t handle, float damage) {
+        // Minecraft hit a stand-in: ev.a = damage after Minecraft's own sword/crit/enchantment maths,
+        // ev.b/ev.c = knockback direction (Minecraft x/z), ev.d = knockback strength.
+        void onHit(const proto::McEvent& ev) {
+            const std::uint32_t handle = ev.formId;
             auto* e = Engine::entityValid(handle) ? Engine::getEntityPointer(handle) : nullptr;
             if (!e || e->entityCategory != Engine::EntityCategory_Biped || e->health <= 0.0f)
                 return;
-            float left = damage / kMcHpPerBar;  // shield first, the rest to health
-            if (e->shield > 0.0f) {
-                const float taken = std::min(e->shield, left);
-                e->shield -= taken;
+            const bool crit = (ev.flags & proto::kHitCritical) != 0;
+
+            // Minecraft decides how much it hurts: shield first, the rest to health.
+            float shield = e->shield, health = e->health;
+            float left = ev.a / kMcHpPerBar;
+            if (shield > 0.0f) {
+                const float taken = std::min(shield, left);
+                shield -= taken;
                 left -= taken;
             }
-            e->health -= left;
-            if (e->health <= 0.0f)
-                kill(handle, e, Engine::getPlayerHandle());
-            // ponytail: non-lethal hits only lower the bars; Halo plays no flinch for them.
+            health -= left;
+            const bool lethal = health <= 0.0f;
+
+            // Halo decides how it looks: a melee hit through its own damage code (flinch, shield flare
+            // or blood, impact effects, AI notices). Pad the bar it lands on so Halo's own melee damage
+            // can't decide anything, then put Minecraft's numbers back.
+            float dir[3] = { ev.b, -ev.c, 0.0f };  // Minecraft x/z -> Halo x/y
+            const float len = std::hypot(dir[0], dir[1]);
+            if (len > 1e-4f)
+                dir[0] /= len, dir[1] /= len;
+            auto* tag = meleeTag();
+            if (tag && Spark::DamageEntity::original) {
+                constexpr float kPad = 10.0f;
+                if (!lethal) {
+                    if (e->shield > 0.0f)
+                        e->shield += kPad;
+                    else
+                        e->health += kPad;
+                }
+                Engine::DamageEvent d{};
+                d.damageTypeTagHandle = tag->tagID;
+                d.sourceType = kSourceMelee;
+                d.flags = kSingle | (lethal ? kInstantKill : 0) | (crit ? kHead : 0);  // a crit lands like a headshot
+                d.interactorHandle = 0xFFFFFFFF;
+                d.attackerHandle = Engine::getPlayerHandle();
+                d.sourceTypeIndex = 0xFFFF;
+                d.hitPosition = { e->pos.x, e->pos.y, e->pos.z + 0.4f };
+                d.hitDirection = { dir[0], dir[1], 0.0f };
+                d.baseDamage = 1.0f;
+                d.damageMultiplier = 1.0f;
+                Spark::DamageEntity::original(&d, handle, 0, 0, -1, 0);
+            } else if (lethal) {
+                e->health = 0.0f;  // ponytail: no melee tag on this map; it dies on its next hit
+            }
+            if (!lethal) {
+                e->shield = shield;
+                e->health = health;
+            }
+
+            // Minecraft's knockback, along the swing (crits shove half again as hard).
+            const float push = ev.d * kKnockbackScale * (crit ? 1.5f : 1.0f);
+            e->vel = { e->vel.x + dir[0] * push, e->vel.y + dir[1] * push, e->vel.z + push * 0.5f };
         }
 
         std::string_view baseName(const char* path) {
@@ -139,7 +188,7 @@ namespace Combat {
             proto::McEvent ev{};
             while (Link::popEvent(ev)) {
                 if (ev.type == proto::kEvHitActor) {
-                    onHit(ev.formId, ev.a);
+                    onHit(ev);
                 } else if (ev.type == proto::kEvPlayerDied) {
                     if (auto* chief = Engine::getPlayerEntity(); chief && chief->health > 0.0f) {
                         log("Steve died: killing Chief");
